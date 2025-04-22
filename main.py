@@ -54,3 +54,7 @@ def envoyer_signal_test():
 # === LANCEMENT UNE SEULE FOIS ===
 if __name__ == "__main__":
     envoyer_signal_test()
+    envoyer_signal_test()
+
+import sys
+sys.exit()
