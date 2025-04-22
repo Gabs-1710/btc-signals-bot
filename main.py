@@ -4,8 +4,8 @@ from datetime import datetime
 import requests
 
 # === CONFIGURATION ===
-BOT_TOKEN = "TON_TOKEN_ICI"
-CHAT_ID = "TON_CHAT_ID_ICI"
+BOT_TOKEN = "123456789:ABCDEFghijklmnop123456"
+CHAT_ID = "987654321"
 
 # === SIMULATION D'UN TRADE TEST ===
 def envoyer_signal_test():
