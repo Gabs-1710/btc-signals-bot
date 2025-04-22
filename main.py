@@ -1,9 +1,11 @@
 import requests
 from datetime import datetime
+import os
 
 # === CONFIGURATION ===
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
+TEST_FLAG_FILE = "trade_test_done.txt"
 
 # === FONCTION POUR OBTENIR LE PRIX BTC ===
 def get_btc_price():
@@ -27,8 +29,8 @@ def send_telegram_message(message):
     except Exception as e:
         print("Erreur envoi Telegram:", e)
 
-# === ENVOI DU MESSAGE "TRADE TEST" UNE FOIS ===
-def envoyer_signal_test():
+# === ENVOI DU TRADE TEST ===
+def envoyer_trade_test():
     prix = get_btc_price()
     if prix is None:
         print("Impossible de récupérer le prix BTC.")
@@ -49,12 +51,22 @@ def envoyer_signal_test():
         f"Horodatage : {heure}"
     )
     send_telegram_message(message)
-    print("Message envoyé.")
+    print("Trade test envoyé.")
 
-# === LANCEMENT UNE SEULE FOIS ===
+    # Créer un fichier pour marquer que le test a été fait
+    with open(TEST_FLAG_FILE, "w") as f:
+        f.write("ok")
+
+# === ANALYSE ET ENVOI DES VRAIS SIGNAUX ===
+def analyser_et_envoyer_les_signaux_gagnants():
+    # Ici viendra ton moteur d'analyse final avec toutes les conditions smart
+    print("Analyse des signaux en cours...")
+    # Exemple : tu pourras appeler send_telegram_message("VRAI SIGNAL") si toutes les conditions sont remplies
+    pass
+
+# === LANCEMENT ===
 if __name__ == "__main__":
-    envoyer_signal_test()
-    envoyer_signal_test()
-
-import sys
-sys.exit()
+    if not os.path.exists(TEST_FLAG_FILE):
+        envoyer_trade_test()
+    else:
+        analyser_et_envoyer_les_signaux_gagnants()
