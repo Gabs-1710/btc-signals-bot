@@ -1,4 +1,3 @@
-import time
 import requests
 from datetime import datetime
 import random
@@ -6,33 +5,48 @@ import random
 # === CONFIGURATION ===
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
-API_KEY = "64845225-701f-4e09-b2a2-c3fd8315cb13"  # Pour usage futur
+API_KEY = "64845225-701f-4e09-b2a2-c3fd8315cb13"
 
-# === ENVOI DU MESSAGE ===
+# === FONCTION POUR RÉCUPÉRER LE PRIX BTC ===
+def get_btc_price():
+    try:
+        url = "https://api.taapi.io/price?secret=" + API_KEY + "&exchange=binance&symbol=BTC/USDT&interval=5m"
+        response = requests.get(url)
+        result = response.json()
+        return float(result["value"])
+    except Exception as e:
+        print("Erreur récupération prix :", e)
+        return random.uniform(30000, 35000)
+
+# === ENVOYER LE MESSAGE TEST ===
 def envoyer_signal_test():
-    prix = random.uniform(91300, 91450)
-    prix = round(prix, 2)
-    tp1 = round(prix + 300, 2)
-    tp2 = round(prix + 1000, 2)
-    sl = round(prix - 150, 2)
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    prix = get_btc_price()
+    tp1 = prix + 300
+    tp2 = prix + 1000
+    sl = prix - 150
+    horodatage = datetime.now().strftime("%H:%M:%S")
 
     message = (
         "**TRADE TEST BTCUSD**\n"
-        f"Entrée : {prix}\n"
-        f"TP1 : {tp1}\n"
-        f"TP2 : {tp2}\n"
-        f"SL : {sl}\n"
-        f"Confiance : 100%\n"
-        f"Horodatage : {timestamp}"
+        f"Entrée : {round(prix, 2)}\n"
+        f"TP1 : {round(tp1, 2)}\n"
+        f"TP2 : {round(tp2, 2)}\n"
+        f"SL : {round(sl, 2)}\n"
+        "Confiance : 100%\n"
+        f"Horodatage : {horodatage}"
     )
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
-    response = requests.post(url, data=data)
-    print("Signal test envoyé → Statut :", response.status_code)
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message
+    }
+    try:
+        requests.post(url, data=payload)
+        print("Message envoyé.")
+    except Exception as e:
+        print("Erreur envoi message :", e)
 
-# === EXÉCUTER UNE FOIS ET QUITTER ===
-envoyer_signal_test()
-import sys
-sys.exit()
+# === LANCER UNE SEULE FOIS ===
+if __name__ == "__main__":
+    envoyer_signal_test()
