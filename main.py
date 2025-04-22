@@ -4,7 +4,7 @@ import telegram
 from datetime import datetime
 
 # === CONFIGURATION ===
-TELEGRAM_TOKEN = "64845225-701f-4e09-b2a2-c3fd8315cb13"
+TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = 2128959111
 TRADE_SENT = False
 
