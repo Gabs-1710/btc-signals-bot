@@ -5,7 +5,7 @@ import os
 # === CONFIGURATION ===
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
-TEST_FLAG_FILE = "trade_test_done.txt"
+ENVOYER_TRADE_TEST = True  # Passe à False si tu veux sauter le test
 
 # === FONCTION POUR OBTENIR LE PRIX BTC ===
 def get_btc_price():
@@ -53,20 +53,14 @@ def envoyer_trade_test():
     send_telegram_message(message)
     print("Trade test envoyé.")
 
-    # Créer un fichier pour marquer que le test a été fait
-    with open(TEST_FLAG_FILE, "w") as f:
-        f.write("ok")
-
 # === ANALYSE ET ENVOI DES VRAIS SIGNAUX ===
 def analyser_et_envoyer_les_signaux_gagnants():
-    # Ici viendra ton moteur d'analyse final avec toutes les conditions smart
-    print("Analyse des signaux en cours...")
-    # Exemple : tu pourras appeler send_telegram_message("VRAI SIGNAL") si toutes les conditions sont remplies
+    print("Analyse des signaux gagnants en cours...")
+    # Ici sera ajouté le moteur final
     pass
 
 # === LANCEMENT ===
 if __name__ == "__main__":
-    if not os.path.exists(TEST_FLAG_FILE):
+    if ENVOYER_TRADE_TEST:
         envoyer_trade_test()
-    else:
-        analyser_et_envoyer_les_signaux_gagnants()
+    analyser_et_envoyer_les_signaux_gagnants()
