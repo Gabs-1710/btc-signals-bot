@@ -4,7 +4,7 @@ import telegram
 from datetime import datetime
 
 # === CONFIGURATION ===
-TELEGRAM_TOKEN = "TON_TOKEN_ICI"  # Remplace par ton vrai token
+TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"  # Remplace par ton vrai token
 CHAT_ID = "2128959111"
 COINMARKET_API_KEY = "64845225-701f-4e09-b2a2-c3fd8315cb13"
 HEADERS = {"X-CMC_PRO_API_KEY": COINMARKET_API_KEY}
