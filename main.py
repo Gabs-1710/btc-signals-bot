@@ -1,66 +1,59 @@
 import requests
 import time
-import datetime
-import pytz
+from datetime import datetime
 
+# Configuration du bot Telegram
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
 API_KEY = "64845225-701f-4e09-b2a2-c3fd8315cb13"
+HEADERS = {"X-CoinAPI-Key": API_KEY}
 
-HEADERS = {
-    "X-CoinAPI-Key": API_KEY
-}
-
-URL = "https://rest.coinapi.io/v1/exchangerate/BTC/USD"
-
-sent_trade_test = False
-
+# Fonction pour récupérer le prix réel de BTCUSD
 def get_btc_price():
     try:
-        response = requests.get(URL, headers=HEADERS)
+        url = "https://rest.coinapi.io/v1/exchangerate/BTC/USD"
+        response = requests.get(url, headers=HEADERS)
         data = response.json()
-        return float(data['rate'])
+        return float(data["rate"])
     except Exception as e:
-        print("Erreur récupération prix:", e)
+        print("Erreur récupération prix :", e)
         return None
 
-def send_telegram_message(message):
+# Fonction pour envoyer un message Telegram
+def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
+    payload = {"chat_id": CHAT_ID, "text": text}
     try:
-        response = requests.post(url, data=payload)
-        if response.status_code != 200:
-            print("Erreur Telegram:", response.text)
+        requests.post(url, data=payload)
     except Exception as e:
-        print("Erreur envoi Telegram:", e)
+        print("Erreur envoi Telegram :", e)
 
-def send_trade_test():
-    global sent_trade_test
-    if sent_trade_test:
-        return
-
-    price = get_btc_price()
-    if price is None:
-        print("Impossible de récupérer le prix BTC.")
-        return
-
+# Fonction pour formater un message trade test
+def format_trade_message(price, direction="ACHAT"):
     tp1 = round(price + 300, 2)
     tp2 = round(price + 1000, 2)
     sl = round(price - 150, 2)
-    now = datetime.datetime.now(pytz.timezone('Europe/Paris')).strftime("%H:%M:%S")
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    return f"""
+**{direction} BTCUSD**
+PE : {price}
+TP1 : {tp1}
+TP2 : {tp2}
+SL : {sl}
+Confiance : 100%
+Horodatage : {timestamp}
+""".strip()
 
-    message = f"**ACHAT BTCUSD**\nPE : {price}\nTP1 : {tp1}\nTP2 : {tp2}\nSL : {sl}\nConfiance : 100%\nHorodatage : {now}"
+# Envoi unique du message test
+btc_price = get_btc_price()
+if btc_price:
+    message = format_trade_message(btc_price)
     send_telegram_message(message)
     print("Trade test envoyé.")
-    sent_trade_test = True
+else:
+    print("Impossible de récupérer le prix BTC.")
 
-def analyze_signals():
+# Lancement de l'analyse (boucle principale silencieuse)
+while True:
     print("Analyse des signaux gagnants en cours...")
-    send_telegram_message("Analyse des signaux gagnants en cours...")
-
-if __name__ == '__main__':
-    send_trade_test()
-    analyze_signals()
+    time.sleep(60 * 60)  # Analyse fictive chaque heure (peut être ajusté)
