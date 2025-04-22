@@ -1,74 +1,78 @@
 import requests
 import time
-import telegram
 from datetime import datetime
+from telegram import Bot
 
 # === CONFIGURATION ===
-TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"  # Remplace par ton vrai token
-CHAT_ID = "2128959111"
-COINMARKET_API_KEY = "64845225-701f-4e09-b2a2-c3fd8315cb13"
-HEADERS = {"X-CMC_PRO_API_KEY": COINMARKET_API_KEY}
+TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
+CHAT_ID = 2128959111
+CMC_API_KEY = "64845225-701f-4e09-b2a2-c3fd8315cb13"
 CMC_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-PARAMS = {"symbol": "BTC", "convert": "USD"}
+SYMBOL = "BTC"
+CURRENCY = "USD"
 
-# === INITIALISATION DU BOT TELEGRAM ===
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
+# === INITIALISATION DU BOT ===
+bot = Bot(token=TELEGRAM_TOKEN)
 
-# === FONCTION POUR RÉCUPÉRER LE PRIX ACTUEL DE BTC ===
+last_check = time.time()
+trade_test_sent = False
+
 def get_btc_price():
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+    params = {"symbol": SYMBOL, "convert": CURRENCY}
     try:
-        response = requests.get(CMC_URL, headers=HEADERS, params=PARAMS)
-        data = response.json()
-        return float(data["data"]["BTC"]["quote"]["USD"]["price"])
+        response = requests.get(CMC_URL, headers=headers, params=params)
+        response.raise_for_status()
+        return float(response.json()["data"][SYMBOL]["quote"][CURRENCY]["price"])
     except Exception as e:
-        print("Erreur récupération prix BTC:", e)
+        print("Erreur prix BTC :", e)
         return None
 
-# === ENVOI DU TRADE TEST AU DÉMARRAGE ===
 def send_trade_test(price):
-    entry = round(price, 2)
-    tp1 = round(entry + 300, 2)
-    tp2 = round(entry + 1000, 2)
-    sl = round(entry - 150, 2)
     message = (
-        "**TRADE TEST BTCUSD**\n"
+        f"**TRADE TEST BTCUSD**\n"
         f"ACHAT\n"
-        f"PE : {entry}\n"
-        f"TP1 : {tp1}\n"
-        f"TP2 : {tp2}\n"
-        f"SL : {sl}\n"
+        f"PE : {price:.2f}\n"
+        f"TP1 : {price + 300:.2f}\n"
+        f"TP2 : {price + 1000:.2f}\n"
+        f"SL : {price - 150:.2f}\n"
         f"Horodatage : {datetime.now().strftime('%H:%M:%S')}"
     )
     bot.send_message(chat_id=CHAT_ID, text=message)
-    print("Trade test envoyé.")
 
-# === DÉTECTION DES SIGNES ULTRA GAGNANTS (SIMULÉE ICI) ===
-def analyse_des_signaux():
-    while True:
-        print("Analyse des signaux gagnants en cours...")
-        time.sleep(600)  # 10 min entre chaque cycle (à adapter)
+def send_status_message():
+    bot.send_message(chat_id=CHAT_ID, text="Aucun signal ultra gagnant détecté pour le moment. Analyse toujours en cours...")
 
-        # Simuler une détection de signal parfait (à remplacer par la vraie logique)
-        signal_detecte = False
+def send_trade_signal(price, direction="ACHAT"):
+    tp1 = price + 300 if direction == "ACHAT" else price - 300
+    tp2 = price + 1000 if direction == "ACHAT" else price - 1000
+    sl = price - 150 if direction == "ACHAT" else price + 150
+    message = (
+        f"**{direction} BTCUSD**\n"
+        f"PE : {price:.2f}\n"
+        f"TP1 : {tp1:.2f}\n"
+        f"TP2 : {tp2:.2f}\n"
+        f"SL : {sl:.2f}"
+    )
+    bot.send_message(chat_id=CHAT_ID, text=message)
 
-        if signal_detecte:
-            pe = 9000  # Exemple
-            tp1 = pe + 300
-            tp2 = pe + 1000
-            sl = pe - 150
-            msg = (
-                "**VENTE**\n"
-                f"PE : {pe}\n"
-                f"TP1 : {tp1}\n"
-                f"TP2 : {tp2}\n"
-                f"SL : {sl}"
-            )
-            bot.send_message(chat_id=CHAT_ID, text=msg)
-            print("Signal ultra gagnant envoyé.")
+# === BOUCLE PRINCIPALE ===
+while True:
+    now = time.time()
+    price = get_btc_price()
 
-# === MAIN ===
-if __name__ == "__main__":
-    prix = get_btc_price()
-    if prix:
-        send_trade_test(prix)
-    analyse_des_signaux()
+    if price:
+        if not trade_test_sent:
+            send_trade_test(price)
+            trade_test_sent = True
+        else:
+            # === ICI : LOGIQUE POUR DETECTER UN TRADE GAGNANT ===
+            if int(price) % 137 == 0:  # Exemples simples de critère factice
+                send_trade_signal(price, direction="ACHAT")
+
+    # Toutes les 2 heures = 7200 secondes
+    if now - last_check > 7200:
+        send_status_message()
+        last_check = now
+
+    time.sleep(60)
