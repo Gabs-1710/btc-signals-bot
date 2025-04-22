@@ -2,51 +2,56 @@ import requests
 from datetime import datetime
 import time
 
+# === CONFIGURATION ===
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
-API_KEY = "64845225-701f-4e09-b2a2-c3fd8315cb13"
 
+# === FONCTION POUR OBTENIR LE PRIX BTC ===
 def get_btc_price():
-    url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-    headers = {"X-MBX-APIKEY": API_KEY}
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+        response = requests.get(url, timeout=5)
         data = response.json()
         return float(data["price"])
     except Exception as e:
         print("Erreur récupération prix :", e)
         return None
 
-def envoyer_signal_test():
-    prix = get_btc_price()
-    if prix is None:
-        print("Impossible de récupérer le prix BTC.")
-        return
-    tp1 = prix + 300
-    tp2 = prix + 1000
-    sl = prix - 150
-    now = datetime.now().strftime("%H:%M:%S")
-    message = (
-        "**TRADE TEST BTCUSD**\n"
-        f"Entrée : {prix:.2f}\n"
-        f"TP1 : {tp1:.2f}\n"
-        f"TP2 : {tp2:.2f}\n"
-        f"SL : {sl:.2f}\n"
-        "Confiance : 100%\n"
-        f"Horodatage : {now}"
-    )
+# === FONCTION POUR ENVOYER UN MESSAGE TELEGRAM ===
+def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
         "text": message
     }
     try:
-        r = requests.post(url, json=payload)
-        if r.status_code == 200:
-            print("Message envoyé.")
-        else:
-            print(f"Erreur Telegram : {r.status_code} - {r.text}")
+        requests.post(url, json=payload)
     except Exception as e:
-        print("Erreur envoi message :", e)
+        print("Erreur envoi Telegram :", e)
 
+# === ENVOI DU MESSAGE "TRADE TEST" UNE FOIS ===
+def envoyer_signal_test():
+    prix = get_btc_price()
+    if prix is None:
+        print("Impossible de récupérer le prix BTC.")
+        return
+
+    tp1 = round(prix + 300, 2)
+    tp2 = round(prix + 1000, 2)
+    sl = round(prix - 150, 2)
+    heure = datetime.now().strftime("%H:%M:%S")
+
+    message = (
+        "**TRADE TEST BTCUSD**\n"
+        f"Entrée : {prix}\n"
+        f"TP1 : {tp1}\n"
+        f"TP2 : {tp2}\n"
+        f"SL : {sl}\n"
+        "Confiance : 100%\n"
+        f"Horodatage : {heure}"
+    )
+    send_telegram_message(message)
+    print("Message envoyé.")
+
+# === LANCEMENT UNE SEULE FOIS ===
 envoyer_signal_test()
