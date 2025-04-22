@@ -1,6 +1,5 @@
 import requests
 from datetime import datetime
-import time
 
 # === CONFIGURATION ===
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
@@ -9,12 +8,11 @@ CHAT_ID = "2128959111"
 # === FONCTION POUR OBTENIR LE PRIX BTC ===
 def get_btc_price():
     try:
-        url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-        response = requests.get(url, timeout=5)
+        response = requests.get("https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=5)
         data = response.json()
-        return float(data["price"])
+        return float(data["data"]["amount"])
     except Exception as e:
-        print("Erreur récupération prix :", e)
+        print("Erreur récupération prix Coinbase:", e)
         return None
 
 # === FONCTION POUR ENVOYER UN MESSAGE TELEGRAM ===
@@ -27,7 +25,7 @@ def send_telegram_message(message):
     try:
         requests.post(url, json=payload)
     except Exception as e:
-        print("Erreur envoi Telegram :", e)
+        print("Erreur envoi Telegram:", e)
 
 # === ENVOI DU MESSAGE "TRADE TEST" UNE FOIS ===
 def envoyer_signal_test():
@@ -54,4 +52,5 @@ def envoyer_signal_test():
     print("Message envoyé.")
 
 # === LANCEMENT UNE SEULE FOIS ===
-envoyer_signal_test()
+if __name__ == "__main__":
+    envoyer_signal_test()
