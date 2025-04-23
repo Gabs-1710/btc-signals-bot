@@ -13,8 +13,9 @@ CURRENCY = "USD"
 
 # === INITIALISATION DU BOT ===
 bot = Bot(token=TELEGRAM_TOKEN)
+
+last_check = time.time()
 trade_test_sent = False
-last_status_time = time.time()
 
 def get_btc_price():
     headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
@@ -24,7 +25,7 @@ def get_btc_price():
         response.raise_for_status()
         return float(response.json()["data"][SYMBOL]["quote"][CURRENCY]["price"])
     except Exception as e:
-        print("[ERREUR] Impossible de récupérer le prix BTC:", e)
+        print("Erreur prix BTC :", e)
         return None
 
 def send_trade_test(price):
@@ -38,6 +39,12 @@ def send_trade_test(price):
         f"Horodatage : {datetime.now().strftime('%H:%M:%S')}"
     )
     bot.send_message(chat_id=CHAT_ID, text=message)
+    print("Trade test envoyÃ©.")
+
+def send_status_message():
+    msg = "Aucun signal ultra gagnant dÃ©tectÃ© pour le moment. Analyse toujours en cours..."
+    bot.send_message(chat_id=CHAT_ID, text=msg)
+    print("Message de statut envoyÃ©.")
 
 def send_trade_signal(price, direction="ACHAT"):
     tp1 = price + 300 if direction == "ACHAT" else price - 300
@@ -51,34 +58,27 @@ def send_trade_signal(price, direction="ACHAT"):
         f"SL : {sl:.2f}"
     )
     bot.send_message(chat_id=CHAT_ID, text=message)
-
-def send_status_message():
-    bot.send_message(chat_id=CHAT_ID, text="Aucun signal ultra gagnant détecté pour le moment. Analyse toujours en cours...")
-
-def detect_trade_opportunity(price):
-    # LOGIQUE TEMPORAIRE FACTICE POUR TEST
-    # À remplacer par analyse réelle des bougies, CHoCH, OB, etc.
-    if int(price) % 137 == 0:
-        return "ACHAT" if int(price) % 2 == 0 else "VENTE"
-    return None
+    print(f"Signal {direction} envoyÃ© avec PE {price:.2f}")
 
 # === BOUCLE PRINCIPALE ===
+print("Lancement du moteur de trading en continu...")
+
 while True:
-    current_time = time.time()
+    now = time.time()
     price = get_btc_price()
 
     if price:
+        print(f"Prix BTC actuel : {price:.2f}")
         if not trade_test_sent:
             send_trade_test(price)
             trade_test_sent = True
         else:
-            signal = detect_trade_opportunity(price)
-            if signal:
-                send_trade_signal(price, signal)
+            # Exemple simple de critÃ¨re de trade (Ã  remplacer plus tard par algo rÃ©el)
+            if int(price) % 137 == 0:
+                send_trade_signal(price, direction="ACHAT")
 
-    # Message d'état toutes les 2 heures
-    if current_time - last_status_time > 7200:
+    if now - last_check > 7200:
         send_status_message()
-        last_status_time = current_time
+        last_check = now
 
     time.sleep(60)
