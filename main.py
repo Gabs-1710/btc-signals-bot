@@ -11,11 +11,12 @@ CMC_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 SYMBOL = "BTC"
 CURRENCY = "USD"
 
-# === INITIALISATION DU BOT ===
+# === INITIALISATION ===
 bot = Bot(token=TELEGRAM_TOKEN)
-
-last_check = time.time()
+last_status = time.time()
 trade_test_sent = False
+
+print("Lancement du moteur de trading en continu...")
 
 def get_btc_price():
     headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
@@ -23,9 +24,11 @@ def get_btc_price():
     try:
         response = requests.get(CMC_URL, headers=headers, params=params)
         response.raise_for_status()
-        return float(response.json()["data"][SYMBOL]["quote"][CURRENCY]["price"])
+        price = float(response.json()["data"][SYMBOL]["quote"][CURRENCY]["price"])
+        print("Prix BTC actuel :", price)
+        return price
     except Exception as e:
-        print("Erreur prix BTC :", e)
+        print("Erreur récupération prix :", e)
         return None
 
 def send_trade_test(price):
@@ -39,12 +42,11 @@ def send_trade_test(price):
         f"Horodatage : {datetime.now().strftime('%H:%M:%S')}"
     )
     bot.send_message(chat_id=CHAT_ID, text=message)
-    print("Trade test envoyÃ©.")
+    print("Message de test envoyé.")
 
 def send_status_message():
-    msg = "Aucun signal ultra gagnant dÃ©tectÃ© pour le moment. Analyse toujours en cours..."
-    bot.send_message(chat_id=CHAT_ID, text=msg)
-    print("Message de statut envoyÃ©.")
+    bot.send_message(chat_id=CHAT_ID, text="Aucun signal ultra gagnant détecté pour le moment. Analyse toujours en cours...")
+    print("Message de statut envoyé.")
 
 def send_trade_signal(price, direction="ACHAT"):
     tp1 = price + 300 if direction == "ACHAT" else price - 300
@@ -58,27 +60,24 @@ def send_trade_signal(price, direction="ACHAT"):
         f"SL : {sl:.2f}"
     )
     bot.send_message(chat_id=CHAT_ID, text=message)
-    print(f"Signal {direction} envoyÃ© avec PE {price:.2f}")
+    print(f"Signal envoyé ({direction}) à {price:.2f}")
 
 # === BOUCLE PRINCIPALE ===
-print("Lancement du moteur de trading en continu...")
-
 while True:
     now = time.time()
     price = get_btc_price()
 
     if price:
-        print(f"Prix BTC actuel : {price:.2f}")
         if not trade_test_sent:
             send_trade_test(price)
             trade_test_sent = True
         else:
-            # Exemple simple de critÃ¨re de trade (Ã  remplacer plus tard par algo rÃ©el)
+            # Simulation à remplacer par l’analyse intelligente réelle
             if int(price) % 137 == 0:
                 send_trade_signal(price, direction="ACHAT")
 
-    if now - last_check > 7200:
+    if now - last_status > 7200:
         send_status_message()
-        last_check = now
+        last_status = now
 
     time.sleep(60)
