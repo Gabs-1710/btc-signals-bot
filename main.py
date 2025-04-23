@@ -13,9 +13,8 @@ CURRENCY = "USD"
 
 # === INITIALISATION DU BOT ===
 bot = Bot(token=TELEGRAM_TOKEN)
-
-last_check = time.time()
 trade_test_sent = False
+last_status_time = time.time()
 
 def get_btc_price():
     headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
@@ -25,7 +24,7 @@ def get_btc_price():
         response.raise_for_status()
         return float(response.json()["data"][SYMBOL]["quote"][CURRENCY]["price"])
     except Exception as e:
-        print("Erreur prix BTC :", e)
+        print("[ERREUR] Impossible de récupérer le prix BTC:", e)
         return None
 
 def send_trade_test(price):
@@ -40,9 +39,6 @@ def send_trade_test(price):
     )
     bot.send_message(chat_id=CHAT_ID, text=message)
 
-def send_status_message():
-    bot.send_message(chat_id=CHAT_ID, text="Aucun signal ultra gagnant détecté pour le moment. Analyse toujours en cours...")
-
 def send_trade_signal(price, direction="ACHAT"):
     tp1 = price + 300 if direction == "ACHAT" else price - 300
     tp2 = price + 1000 if direction == "ACHAT" else price - 1000
@@ -56,9 +52,19 @@ def send_trade_signal(price, direction="ACHAT"):
     )
     bot.send_message(chat_id=CHAT_ID, text=message)
 
+def send_status_message():
+    bot.send_message(chat_id=CHAT_ID, text="Aucun signal ultra gagnant détecté pour le moment. Analyse toujours en cours...")
+
+def detect_trade_opportunity(price):
+    # LOGIQUE TEMPORAIRE FACTICE POUR TEST
+    # À remplacer par analyse réelle des bougies, CHoCH, OB, etc.
+    if int(price) % 137 == 0:
+        return "ACHAT" if int(price) % 2 == 0 else "VENTE"
+    return None
+
 # === BOUCLE PRINCIPALE ===
 while True:
-    now = time.time()
+    current_time = time.time()
     price = get_btc_price()
 
     if price:
@@ -66,13 +72,13 @@ while True:
             send_trade_test(price)
             trade_test_sent = True
         else:
-            # === ICI : LOGIQUE POUR DETECTER UN TRADE GAGNANT ===
-            if int(price) % 137 == 0:  # Exemples simples de critère factice
-                send_trade_signal(price, direction="ACHAT")
+            signal = detect_trade_opportunity(price)
+            if signal:
+                send_trade_signal(price, signal)
 
-    # Toutes les 2 heures = 7200 secondes
-    if now - last_check > 7200:
+    # Message d'état toutes les 2 heures
+    if current_time - last_status_time > 7200:
         send_status_message()
-        last_check = now
+        last_status_time = current_time
 
     time.sleep(60)
