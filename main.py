@@ -11,12 +11,10 @@ CMC_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 SYMBOL = "BTC"
 CURRENCY = "USD"
 
-# === INITIALISATION ===
+# === INITIALISATION DU BOT ===
 bot = Bot(token=TELEGRAM_TOKEN)
-last_status = time.time()
 trade_test_sent = False
-
-print("Lancement du moteur de trading en continu...")
+last_status_time = time.time()
 
 def get_btc_price():
     headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
@@ -24,11 +22,9 @@ def get_btc_price():
     try:
         response = requests.get(CMC_URL, headers=headers, params=params)
         response.raise_for_status()
-        price = float(response.json()["data"][SYMBOL]["quote"][CURRENCY]["price"])
-        print("Prix BTC actuel :", price)
-        return price
+        return float(response.json()["data"][SYMBOL]["quote"][CURRENCY]["price"])
     except Exception as e:
-        print("Erreur récupération prix :", e)
+        print("[ERREUR] Impossible de récupérer le prix BTC:", e)
         return None
 
 def send_trade_test(price):
@@ -42,11 +38,6 @@ def send_trade_test(price):
         f"Horodatage : {datetime.now().strftime('%H:%M:%S')}"
     )
     bot.send_message(chat_id=CHAT_ID, text=message)
-    print("Message de test envoyé.")
-
-def send_status_message():
-    bot.send_message(chat_id=CHAT_ID, text="Aucun signal ultra gagnant détecté pour le moment. Analyse toujours en cours...")
-    print("Message de statut envoyé.")
 
 def send_trade_signal(price, direction="ACHAT"):
     tp1 = price + 300 if direction == "ACHAT" else price - 300
@@ -60,11 +51,20 @@ def send_trade_signal(price, direction="ACHAT"):
         f"SL : {sl:.2f}"
     )
     bot.send_message(chat_id=CHAT_ID, text=message)
-    print(f"Signal envoyé ({direction}) à {price:.2f}")
+
+def send_status_message():
+    bot.send_message(chat_id=CHAT_ID, text="Aucun signal ultra gagnant détecté pour le moment. Analyse toujours en cours...")
+
+def detect_trade_opportunity(price):
+    # LOGIQUE TEMPORAIRE FACTICE POUR TEST
+    # À remplacer par analyse réelle des bougies, CHoCH, OB, etc.
+    if int(price) % 137 == 0:
+        return "ACHAT" if int(price) % 2 == 0 else "VENTE"
+    return None
 
 # === BOUCLE PRINCIPALE ===
 while True:
-    now = time.time()
+    current_time = time.time()
     price = get_btc_price()
 
     if price:
@@ -72,12 +72,13 @@ while True:
             send_trade_test(price)
             trade_test_sent = True
         else:
-            # Simulation à remplacer par l’analyse intelligente réelle
-            if int(price) % 137 == 0:
-                send_trade_signal(price, direction="ACHAT")
+            signal = detect_trade_opportunity(price)
+            if signal:
+                send_trade_signal(price, signal)
 
-    if now - last_status > 7200:
+    # Message d'état toutes les 2 heures
+    if current_time - last_status_time > 7200:
         send_status_message()
-        last_status = now
+        last_status_time = current_time
 
     time.sleep(60)
