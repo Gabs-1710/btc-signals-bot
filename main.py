@@ -80,7 +80,6 @@ def module_double_bottom(df, i):
     return abs(df["low"][i] - df["low"][i-3]) < df["low"][i] * 0.001, \
            abs(df["high"][i] - df["high"][i-3]) < df["high"][i] * 0.001
 
-# === GÉNÉRATION DE COMBINAISONS STRATÉGIQUES
 def generate_strategies(df):
     modules = [
         ("CHoCH", module_choch),
@@ -105,7 +104,6 @@ def generate_strategies(df):
             strategies.append((" + ".join([m[0] for m in combo]), strat))
     return strategies
 
-# === BACKTEST
 def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300):
     trades = []
     signals = strategy_function(df)
@@ -136,7 +134,6 @@ def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300):
             })
     return trades
 
-# === FORMAT MESSAGE TELEGRAM
 def format_message(trade):
     s = "ACHAT" if trade["type"] == "buy" else "VENTE"
     return (
@@ -148,7 +145,6 @@ def format_message(trade):
         f"[{trade['time']} UTC]"
     )
 
-# === TRADE TEST UNIQUE
 def send_trade_test(df):
     last = df.iloc[-1]
     entry = last["close"]
@@ -162,7 +158,6 @@ def send_trade_test(df):
     )
     send_telegram_message(msg)
 
-# === MAIN LOOP
 def main_loop():
     df = get_bars_from_twelvedata()
     if df.empty:
@@ -172,6 +167,7 @@ def main_loop():
     df = add_indicators(df)
     send_trade_test(df)
     last_alert = datetime.utcnow() - timedelta(hours=2)
+    trades_envoyés = set()
 
     while True:
         df = get_bars_from_twelvedata()
@@ -182,12 +178,16 @@ def main_loop():
         df = add_indicators(df)
         strategies = generate_strategies(df)
         found = False
+
         for name, strat in strategies:
             trades = backtest_strategy(df, strat)
-            if trades:
-                for t in trades:
+            for t in trades:
+                key = f"{t['type']}_{t['time']}_{round(t['entry'], 2)}"
+                if key not in trades_envoyés:
+                    trades_envoyés.add(key)
                     send_telegram_message(format_message(t))
-                found = True
+                    found = True
+            if found:
                 break
 
         if not found and datetime.utcnow() - last_alert > timedelta(hours=2):
@@ -196,6 +196,5 @@ def main_loop():
 
         time.sleep(300)
 
-# === LANCEMENT
 if __name__ == "__main__":
     main_loop()
