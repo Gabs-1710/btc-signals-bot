@@ -18,26 +18,29 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"Erreur Telegram : {e}")
 
-# === MESSAGE DE TRADE TEST (RÉALISTE) ===
+# === MESSAGE DE TRADE TEST (RÉALISTE + 5 tentatives) ===
 def send_trade_test():
-    try:
-        res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
-        res.raise_for_status()
-        price = float(res.json()["price"])
-        tp1 = price + 300
-        tp2 = price + 1000
-        sl = price - 150
-        msg = (
-            f"ACHAT (Trade test)\n"
-            f"PE : {price:.2f}\n"
-            f"TP1 : {tp1:.2f}\n"
-            f"TP2 : {tp2:.2f}\n"
-            f"SL : {sl:.2f}\n"
-            f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC]"
-        )
-        send_telegram_message(msg)
-    except Exception as e:
-        send_telegram_message("Trade test impossible : erreur récupération prix BTC.")
+    for attempt in range(5):
+        try:
+            res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=3)
+            res.raise_for_status()
+            price = float(res.json()["price"])
+            tp1 = price + 300
+            tp2 = price + 1000
+            sl = price - 150
+            msg = (
+                f"ACHAT (Trade test)\n"
+                f"PE : {price:.2f}\n"
+                f"TP1 : {tp1:.2f}\n"
+                f"TP2 : {tp2:.2f}\n"
+                f"SL : {sl:.2f}\n"
+                f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC]"
+            )
+            send_telegram_message(msg)
+            return
+        except Exception:
+            time.sleep(1)
+    send_telegram_message("Trade test impossible : erreur récupération prix BTC.")
 
 # === BLOC 1 : RÉCUPÉRATION DES BOUGIES BINANCE ===
 def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
@@ -59,7 +62,7 @@ def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
         print(f"Erreur récupération Binance : {e}")
         return pd.DataFrame()
 
-# === BLOC 4 : FORMATAGE DU MESSAGE TELEGRAM ===
+# === BLOC 4 : FORMATAGE DU MESSAGE TRADE ===
 def format_telegram_message(trade):
     direction = "ACHAT" if trade["type"] == "buy" else "VENTE"
     return (
@@ -98,7 +101,6 @@ def module_double_bottom(df, i):
             abs(df["high"].iloc[i] - df["high"].iloc[i-3]) < df["high"].iloc[i] * 0.001)
 
 def generate_all_strategy_combinations(df):
-    from itertools import combinations
     modules = [
         ("CHoCH", module_choch),
         ("OrderBlock", module_order_block),
@@ -150,7 +152,7 @@ def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300, tp2_pips
             })
     return valid_trades
 
-# === BLOC 6 : BOUCLE MOTEUR 24h/24 ===
+# === BLOC 6 : MOTEUR PRINCIPAL 24h/24 ===
 def main_loop():
     send_trade_test()
     last_alert_time = datetime.utcnow() - timedelta(hours=2)
@@ -190,6 +192,6 @@ def main_loop():
 
         time.sleep(300)
 
-# === LANCEMENT DU MOTEUR ===
+# === LANCEMENT ===
 if __name__ == "__main__":
     main_loop()
