@@ -1,10 +1,45 @@
-# === BLOC 1 : RÉCUPÉRATION DES BOUGIES BINANCE ===
 import requests
 import pandas as pd
 import time
 from datetime import datetime, timedelta
 from itertools import combinations
 
+# === BLOC 5 : ENVOI DU MESSAGE TELEGRAM ===
+TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
+TELEGRAM_CHAT_ID = "2128959111"
+
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+    try:
+        response = requests.post(url, data=payload)
+        response.raise_for_status()
+        print("Message Telegram envoyé.")
+    except Exception as e:
+        print(f"Erreur Telegram : {e}")
+
+# === MESSAGE DE TRADE TEST (RÉALISTE) ===
+def send_trade_test():
+    try:
+        res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+        res.raise_for_status()
+        price = float(res.json()["price"])
+        tp1 = price + 300
+        tp2 = price + 1000
+        sl = price - 150
+        msg = (
+            f"ACHAT (Trade test)\n"
+            f"PE : {price:.2f}\n"
+            f"TP1 : {tp1:.2f}\n"
+            f"TP2 : {tp2:.2f}\n"
+            f"SL : {sl:.2f}\n"
+            f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC]"
+        )
+        send_telegram_message(msg)
+    except Exception as e:
+        send_telegram_message("Trade test impossible : erreur récupération prix BTC.")
+
+# === BLOC 1 : RÉCUPÉRATION DES BOUGIES BINANCE ===
 def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -24,35 +59,18 @@ def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
         print(f"Erreur récupération Binance : {e}")
         return pd.DataFrame()
 
-# === BLOC 2 : BACKTEST DES STRATÉGIES ===
-def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300, tp2_pips=1000):
-    valid_trades = []
-    signals = strategy_function(df)
-    for signal in signals:
-        idx = signal["index"]
-        if idx >= len(df) - 1:
-            continue
-        entry = df.iloc[idx]["close"]
-        future = df.iloc[idx+1:idx+20]
-        tp1 = entry + tp1_pips if signal["type"] == "buy" else entry - tp1_pips
-        tp2 = entry + tp2_pips if signal["type"] == "buy" else entry - tp2_pips
-        sl = entry - sl_pips if signal["type"] == "buy" else entry + sl_pips
-        hit_tp1 = hit_sl = False
-        for _, row in future.iterrows():
-            if signal["type"] == "buy":
-                if row["low"] <= sl: hit_sl = True; break
-                if row["high"] >= tp1: hit_tp1 = True; break
-            else:
-                if row["high"] >= sl: hit_sl = True; break
-                if row["low"] <= tp1: hit_tp1 = True; break
-        if hit_tp1 and not hit_sl:
-            valid_trades.append({
-                "index": idx, "type": signal["type"], "entry": entry,
-                "tp1": tp1, "tp2": tp2, "sl": sl, "time": df.iloc[idx]["open_time"]
-            })
-    return valid_trades
+# === BLOC 4 : FORMATAGE DU MESSAGE TELEGRAM ===
+def format_telegram_message(trade):
+    direction = "ACHAT" if trade["type"] == "buy" else "VENTE"
+    return (
+        f"{direction}\n"
+        f"PE : {trade['entry']:.2f}\n"
+        f"TP1 : {trade['tp1']:.2f}\n"
+        f"TP2 : {trade['tp2']:.2f}\n"
+        f"SL : {trade['sl']:.2f}"
+    )
 
-# === BLOC 3 : APPRENTISSAGE AUTOMATIQUE DES STRATÉGIES ===
+# === BLOC 3 : APPRENTISSAGE STRATÉGIQUE ===
 def module_choch(df, i):
     return (df["high"].iloc[i] > max(df["high"].iloc[i-5:i]) and df["close"].iloc[i] > df["open"].iloc[i],
             df["low"].iloc[i] < min(df["low"].iloc[i-5:i]) and df["close"].iloc[i] < df["open"].iloc[i])
@@ -80,6 +98,7 @@ def module_double_bottom(df, i):
             abs(df["high"].iloc[i] - df["high"].iloc[i-3]) < df["high"].iloc[i] * 0.001)
 
 def generate_all_strategy_combinations(df):
+    from itertools import combinations
     modules = [
         ("CHoCH", module_choch),
         ("OrderBlock", module_order_block),
@@ -91,52 +110,53 @@ def generate_all_strategy_combinations(df):
     strategy_functions = []
     for r in range(2, len(modules)+1):
         for combo in combinations(modules, r):
-            combo_names = [m[0] for m in combo]
             combo_funcs = [m[1] for m in combo]
             def strategy(df, funcs=combo_funcs):
                 signals = []
                 for i in range(20, len(df)-20):
-                    long_cond = [f(df, i)[0] for f in funcs]
-                    short_cond = [f(df, i)[1] for f in funcs]
-                    if all(long_cond): signals.append({"index": i, "type": "buy"})
-                    elif all(short_cond): signals.append({"index": i, "type": "sell"})
+                    if all(f(df, i)[0] for f in funcs):
+                        signals.append({"index": i, "type": "buy"})
+                    elif all(f(df, i)[1] for f in funcs):
+                        signals.append({"index": i, "type": "sell"})
                 return signals
-            strategy_functions.append((" + ".join(combo_names), strategy))
+            strategy_functions.append((" + ".join([m[0] for m in combo]), strategy))
     return strategy_functions
 
-# === BLOC 4 : FORMATAGE DU MESSAGE TELEGRAM ===
-def format_telegram_message(trade):
-    direction = "ACHAT" if trade["type"] == "buy" else "VENTE"
-    return (
-        f"{direction}\n"
-        f"PE : {trade['entry']:.2f}\n"
-        f"TP1 : {trade['tp1']:.2f}\n"
-        f"TP2 : {trade['tp2']:.2f}\n"
-        f"SL : {trade['sl']:.2f}"
-    )
+# === BLOC 2 : BACKTEST ===
+def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300, tp2_pips=1000):
+    valid_trades = []
+    signals = strategy_function(df)
+    for signal in signals:
+        idx = signal["index"]
+        if idx >= len(df) - 1:
+            continue
+        entry = df.iloc[idx]["close"]
+        future = df.iloc[idx+1:idx+20]
+        tp1 = entry + tp1_pips if signal["type"] == "buy" else entry - tp1_pips
+        tp2 = entry + tp2_pips if signal["type"] == "buy" else entry - tp2_pips
+        sl = entry - sl_pips if signal["type"] == "buy" else entry + sl_pips
+        hit_tp1 = hit_sl = False
+        for _, row in future.iterrows():
+            if signal["type"] == "buy":
+                if row["low"] <= sl: hit_sl = True; break
+                if row["high"] >= tp1: hit_tp1 = True; break
+            else:
+                if row["high"] >= sl: hit_sl = True; break
+                if row["low"] <= tp1: hit_tp1 = True; break
+        if hit_tp1 and not hit_sl:
+            valid_trades.append({
+                "index": idx, "type": signal["type"], "entry": entry,
+                "tp1": tp1, "tp2": tp2, "sl": sl, "time": df.iloc[idx]["open_time"]
+            })
+    return valid_trades
 
-# === BLOC 5 : ENVOI DU MESSAGE TELEGRAM ===
-TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
-TELEGRAM_CHAT_ID = "2128959111"
-
-def send_telegram_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    try:
-        response = requests.post(url, data=payload)
-        response.raise_for_status()
-        print("Message Telegram envoyé.")
-    except Exception as e:
-        print(f"Erreur Telegram : {e}")
-
-# === BLOC 6 : BOUCLE CONTINUE 24h/24 ===
+# === BLOC 6 : BOUCLE MOTEUR 24h/24 ===
 def main_loop():
-    send_telegram_message("Trade test – moteur lancé avec succès.")
+    send_trade_test()
     last_alert_time = datetime.utcnow() - timedelta(hours=2)
 
     while True:
-        print(f"Lancement analyse : {datetime.utcnow()}")
-
+        send_telegram_message("Phase d’analyse en cours...")
         df = get_binance_m5_bars()
         if df.empty:
             time.sleep(300)
@@ -151,6 +171,7 @@ def main_loop():
         rs = gain / loss
         df["rsi"] = 100 - (100 / (1 + rs))
 
+        send_telegram_message("Phase de backtest en cours...")
         strategies = generate_all_strategy_combinations(df)
         found = False
 
