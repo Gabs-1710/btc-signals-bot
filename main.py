@@ -1,10 +1,10 @@
+# === BLOC 1 : RÉCUPÉRATION DES BOUGIES BINANCE ===
 import requests
 import pandas as pd
 import time
 from datetime import datetime, timedelta
 from itertools import combinations
 
-# === Bloc 1 : Bougies Binance ===
 def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -18,14 +18,13 @@ def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
             "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
         ])
         df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-        df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
-        df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
+        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
         return df[["open_time", "open", "high", "low", "close"]]
     except Exception as e:
         print(f"Erreur récupération Binance : {e}")
         return pd.DataFrame()
 
-# === Bloc 2 : Backtest ===
+# === BLOC 2 : BACKTEST DES STRATÉGIES ===
 def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300, tp2_pips=1000):
     valid_trades = []
     signals = strategy_function(df)
@@ -34,12 +33,12 @@ def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300, tp2_pips
         if idx >= len(df) - 1:
             continue
         entry = df.iloc[idx]["close"]
-        next_bars = df.iloc[idx + 1:idx + 20]
+        future = df.iloc[idx+1:idx+20]
         tp1 = entry + tp1_pips if signal["type"] == "buy" else entry - tp1_pips
         tp2 = entry + tp2_pips if signal["type"] == "buy" else entry - tp2_pips
-        sl  = entry - sl_pips  if signal["type"] == "buy" else entry + sl_pips
+        sl = entry - sl_pips if signal["type"] == "buy" else entry + sl_pips
         hit_tp1 = hit_sl = False
-        for _, row in next_bars.iterrows():
+        for _, row in future.iterrows():
             if signal["type"] == "buy":
                 if row["low"] <= sl: hit_sl = True; break
                 if row["high"] >= tp1: hit_tp1 = True; break
@@ -53,7 +52,7 @@ def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300, tp2_pips
             })
     return valid_trades
 
-# === Bloc 3 : Stratégies combinées ===
+# === BLOC 3 : APPRENTISSAGE AUTOMATIQUE DES STRATÉGIES ===
 def module_choch(df, i):
     return (df["high"].iloc[i] > max(df["high"].iloc[i-5:i]) and df["close"].iloc[i] > df["open"].iloc[i],
             df["low"].iloc[i] < min(df["low"].iloc[i-5:i]) and df["close"].iloc[i] < df["open"].iloc[i])
@@ -97,18 +96,15 @@ def generate_all_strategy_combinations(df):
             def strategy(df, funcs=combo_funcs):
                 signals = []
                 for i in range(20, len(df)-20):
-                    longs, shorts = [], []
-                    for f in funcs:
-                        b, s = f(df, i)
-                        longs.append(b)
-                        shorts.append(s)
-                    if all(longs): signals.append({"index": i, "type": "buy"})
-                    elif all(shorts): signals.append({"index": i, "type": "sell"})
+                    long_cond = [f(df, i)[0] for f in funcs]
+                    short_cond = [f(df, i)[1] for f in funcs]
+                    if all(long_cond): signals.append({"index": i, "type": "buy"})
+                    elif all(short_cond): signals.append({"index": i, "type": "sell"})
                 return signals
             strategy_functions.append((" + ".join(combo_names), strategy))
     return strategy_functions
 
-# === Bloc 4 : Format message Telegram ===
+# === BLOC 4 : FORMATAGE DU MESSAGE TELEGRAM ===
 def format_telegram_message(trade):
     direction = "ACHAT" if trade["type"] == "buy" else "VENTE"
     return (
@@ -119,7 +115,7 @@ def format_telegram_message(trade):
         f"SL : {trade['sl']:.2f}"
     )
 
-# === Bloc 5 : Envoi Telegram ===
+# === BLOC 5 : ENVOI DU MESSAGE TELEGRAM ===
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
 
@@ -129,15 +125,17 @@ def send_telegram_message(text):
     try:
         response = requests.post(url, data=payload)
         response.raise_for_status()
-        print("Message envoyé Telegram.")
+        print("Message Telegram envoyé.")
     except Exception as e:
         print(f"Erreur Telegram : {e}")
 
-# === Bloc 6 : Boucle continue ===
+# === BLOC 6 : BOUCLE CONTINUE 24h/24 ===
 def main_loop():
+    send_telegram_message("Trade test – moteur lancé avec succès.")
     last_alert_time = datetime.utcnow() - timedelta(hours=2)
+
     while True:
-        print(f"Analyse à {datetime.utcnow()}")
+        print(f"Lancement analyse : {datetime.utcnow()}")
 
         df = get_binance_m5_bars()
         if df.empty:
@@ -154,24 +152,23 @@ def main_loop():
         df["rsi"] = 100 - (100 / (1 + rs))
 
         strategies = generate_all_strategy_combinations(df)
-        found_signal = False
+        found = False
 
         for name, func in strategies:
             trades = backtest_strategy(df, func)
-            if len(trades) > 0:
-                print(f"Stratégie détectée : {name}")
+            if trades:
                 for trade in trades:
                     msg = format_telegram_message(trade)
                     send_telegram_message(msg)
-                found_signal = True
+                found = True
                 break
 
-        if not found_signal and datetime.utcnow() - last_alert_time > timedelta(hours=2):
+        if not found and datetime.utcnow() - last_alert_time > timedelta(hours=2):
             send_telegram_message("Aucun signal parfait détecté pour le moment.")
             last_alert_time = datetime.utcnow()
 
         time.sleep(300)
 
-# === Lancement ===
+# === LANCEMENT DU MOTEUR ===
 if __name__ == "__main__":
     main_loop()
