@@ -53,7 +53,7 @@ def add_indicators(df):
     df["rsi"] = 100 - (100 / (1 + rs))
     return df
 
-# === MODULES DE STRATÉGIE
+# === STRATÉGIES
 def module_choch(df, i):
     return df["high"][i] > max(df["high"][i-5:i]) and df["close"][i] > df["open"][i], \
            df["low"][i] < min(df["low"][i-5:i]) and df["close"][i] < df["open"][i]
@@ -95,7 +95,7 @@ def generate_strategies(df):
             funcs = [m[1] for m in combo]
             def strat(df, funcs=funcs):
                 signals = []
-                for i in range(20, len(df)-20):
+                for i in range(len(df)-3, len(df)-1):  # seulement 2 dernières bougies
                     if all(f(df, i)[0] for f in funcs):
                         signals.append({"index": i, "type": "buy"})
                     elif all(f(df, i)[1] for f in funcs):
