@@ -16,10 +16,10 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"Erreur Telegram : {e}")
 
-# === BLOC 1 : Bougies Binance M5 (corrigé)
+# === BLOC 1 : Bougies Binance US avec User-Agent
 def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
-    url = "https://api1.binance.com/api/v3/klines"  # endpoint plus stable
-    headers = {"User-Agent": "Mozilla/5.0"}  # empêche le blocage Render
+    url = "https://api.binance.us/api/v3/klines"
+    headers = {"User-Agent": "Mozilla/5.0"}
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     try:
         response = requests.get(url, params=params, headers=headers, timeout=5)
@@ -34,7 +34,7 @@ def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
         df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
         return df[["open_time", "open", "high", "low", "close"]]
     except Exception as e:
-        print(f"Erreur bougies Binance : {e}")
+        print(f"Erreur bougies Binance.US : {e}")
         return pd.DataFrame()
 
 def get_binance_m5_bars_with_retry(retries=5, delay=1):
@@ -45,7 +45,7 @@ def get_binance_m5_bars_with_retry(retries=5, delay=1):
         time.sleep(delay)
     return pd.DataFrame()
 
-# === Trade test
+# === TRADE TEST
 def send_trade_test(df):
     try:
         last = df.iloc[-1]
@@ -65,7 +65,7 @@ def send_trade_test(df):
     except:
         send_telegram_message("Trade test impossible : erreur bougie.")
 
-# === Backtest
+# === BACKTEST
 def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300, tp2_pips=1000):
     trades = []
     signals = strategy_function(df)
@@ -93,7 +93,7 @@ def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300, tp2_pips
             })
     return trades
 
-# === Stratégies
+# === STRATÉGIES
 def module_choch(df, i):
     return (df["high"].iloc[i] > max(df["high"].iloc[i-5:i]) and df["close"].iloc[i] > df["open"].iloc[i],
             df["low"].iloc[i] < min(df["low"].iloc[i-5:i]) and df["close"].iloc[i] < df["open"].iloc[i])
@@ -144,7 +144,7 @@ def generate_all_strategy_combinations(df):
             strategies.append((" + ".join([m[0] for m in combo]), strat))
     return strategies
 
-# === Message format
+# === FORMAT MESSAGE
 def format_telegram_message(trade):
     s = "ACHAT" if trade["type"] == "buy" else "VENTE"
     return (
@@ -155,7 +155,7 @@ def format_telegram_message(trade):
         f"SL : {trade['sl']:.2f}"
     )
 
-# === Moteur principal
+# === MOTEUR PRINCIPAL
 def main_loop():
     df = get_binance_m5_bars_with_retry()
     if df.empty:
