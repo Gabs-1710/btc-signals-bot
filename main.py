@@ -16,14 +16,15 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"Erreur Telegram : {e}")
 
-# === BLOC 1 : Bougies Binance M5
+# === BLOC 1 : Bougies Binance M5 (corrigé)
 def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
+    url = "https://api1.binance.com/api/v3/klines"  # endpoint plus stable
+    headers = {"User-Agent": "Mozilla/5.0"}  # empêche le blocage Render
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
     try:
-        url = "https://api.binance.com/api/v3/klines"
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
-        res = requests.get(url, params=params, timeout=5)
-        res.raise_for_status()
-        data = res.json()
+        response = requests.get(url, params=params, headers=headers, timeout=5)
+        response.raise_for_status()
+        data = response.json()
         df = pd.DataFrame(data, columns=[
             "open_time", "open", "high", "low", "close", "volume",
             "close_time", "quote_asset_volume", "number_of_trades",
@@ -44,7 +45,7 @@ def get_binance_m5_bars_with_retry(retries=5, delay=1):
         time.sleep(delay)
     return pd.DataFrame()
 
-# === Trade test basé sur la dernière bougie réelle
+# === Trade test
 def send_trade_test(df):
     try:
         last = df.iloc[-1]
@@ -143,7 +144,7 @@ def generate_all_strategy_combinations(df):
             strategies.append((" + ".join([m[0] for m in combo]), strat))
     return strategies
 
-# === Format message
+# === Message format
 def format_telegram_message(trade):
     s = "ACHAT" if trade["type"] == "buy" else "VENTE"
     return (
@@ -154,7 +155,7 @@ def format_telegram_message(trade):
         f"SL : {trade['sl']:.2f}"
     )
 
-# === Moteur continu
+# === Moteur principal
 def main_loop():
     df = get_binance_m5_bars_with_retry()
     if df.empty:
