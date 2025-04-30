@@ -4,96 +4,87 @@ import time
 from datetime import datetime, timedelta
 from itertools import combinations
 
-# === CONFIG TELEGRAM
+# === CONFIG
+CMC_API_KEY = "64845225-701f-4e09-b2a2-c3fd8315cb13"
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
 
+# === ENVOI TELEGRAM
 def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         requests.post(url, data=payload)
     except Exception as e:
         print(f"Erreur Telegram : {e}")
 
-# === BLOC 1 : Bougies Binance US avec User-Agent
-def get_binance_m5_bars(symbol="BTCUSDT", interval="5m", limit=1000):
-    url = "https://api.binance.us/api/v3/klines"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+# === RÉCUPÉRATION PRIX BTC/USD SPOT (CMC)
+def get_btc_price_cmc():
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    params = {"symbol": "BTC", "convert": "USD"}
+    headers = {"Accepts": "application/json", "X-CMC_PRO_API_KEY": CMC_API_KEY}
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=5)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
-        df = pd.DataFrame(data, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_asset_volume", "number_of_trades",
-            "taker_buy_base_volume", "taker_buy_quote_volume", "ignore"
-        ])
-        df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
-        return df[["open_time", "open", "high", "low", "close"]]
+        return round(data["data"]["BTC"]["quote"]["USD"]["price"], 2)
     except Exception as e:
-        print(f"Erreur bougies Binance.US : {e}")
-        return pd.DataFrame()
-
-def get_binance_m5_bars_with_retry(retries=5, delay=1):
-    for _ in range(retries):
-        df = get_binance_m5_bars()
-        if not df.empty:
-            return df
-        time.sleep(delay)
-    return pd.DataFrame()
+        print("Erreur CoinMarketCap :", e)
+        return None
 
 # === TRADE TEST
-def send_trade_test(df):
-    try:
-        last = df.iloc[-1]
-        entry = last["close"]
-        tp1 = entry + 300
-        tp2 = entry + 1000
-        sl = entry - 150
-        msg = (
-            f"ACHAT (Trade test)\n"
-            f"PE : {entry:.2f}\n"
-            f"TP1 : {tp1:.2f}\n"
-            f"TP2 : {tp2:.2f}\n"
-            f"SL : {sl:.2f}\n"
-            f"[{last['open_time'].strftime('%Y-%m-%d %H:%M:%S')} UTC]"
-        )
-        send_telegram_message(msg)
-    except:
-        send_telegram_message("Trade test impossible : erreur bougie.")
+def send_trade_test():
+    price = get_btc_price_cmc()
+    if price is None:
+        send_telegram_message("Trade test impossible : erreur prix CMC.")
+        return
+    tp1 = price + 300
+    tp2 = price + 1000
+    sl = price - 150
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    msg = (
+        f"ACHAT (Trade test)\n"
+        f"PE : {price:.2f}\n"
+        f"TP1 : {tp1:.2f}\n"
+        f"TP2 : {tp2:.2f}\n"
+        f"SL : {sl:.2f}\n"
+        f"[{now} UTC]"
+    )
+    send_telegram_message(msg)
 
-# === BACKTEST
-def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300, tp2_pips=1000):
-    trades = []
-    signals = strategy_function(df)
-    for signal in signals:
-        i = signal["index"]
-        if i >= len(df) - 1:
-            continue
-        entry = df.iloc[i]["close"]
-        future = df.iloc[i+1:i+20]
-        tp1 = entry + tp1_pips if signal["type"] == "buy" else entry - tp1_pips
-        tp2 = entry + tp2_pips if signal["type"] == "buy" else entry - tp2_pips
-        sl = entry - sl_pips if signal["type"] == "buy" else entry + sl_pips
-        hit_tp1 = hit_sl = False
-        for _, row in future.iterrows():
-            if signal["type"] == "buy":
-                if row["low"] <= sl: hit_sl = True; break
-                if row["high"] >= tp1: hit_tp1 = True; break
-            else:
-                if row["high"] >= sl: hit_sl = True; break
-                if row["low"] <= tp1: hit_tp1 = True; break
-        if hit_tp1 and not hit_sl:
-            trades.append({
-                "index": i, "type": signal["type"], "entry": entry,
-                "tp1": tp1, "tp2": tp2, "sl": sl, "time": df.iloc[i]["open_time"]
-            })
-    return trades
+# === PLACEHOLDER : Bougies réelles à intégrer si CMC envoie des M5 (non dispo actuellement)
+# Pour simulation uniquement (à remplacer par vraies bougies si accessibles un jour via CMC)
 
-# === STRATÉGIES
+def get_fake_bars():
+    now = pd.Timestamp.utcnow().floor("5min")
+    bars = []
+    price = get_btc_price_cmc()
+    if price is None:
+        return pd.DataFrame()
+    for i in range(1000):
+        time_i = now - pd.Timedelta(minutes=5*i)
+        close = price - i * 5
+        open_ = close + 2
+        high = close + 10
+        low = close - 10
+        bars.append([time_i, open_, high, low, close])
+    df = pd.DataFrame(bars, columns=["open_time", "open", "high", "low", "close"])
+    df = df.sort_values("open_time").reset_index(drop=True)
+    return df
+
+# === INDICATEURS
+def compute_indicators(df):
+    df["ema21"] = df["close"].ewm(span=21).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
+    df["ema200"] = df["close"].ewm(span=200).mean()
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = -delta.clip(upper=0).rolling(14).mean()
+    rs = gain / loss
+    df["rsi"] = 100 - (100 / (1 + rs))
+    return df
+
+# === MODULES DE STRATÉGIE
 def module_choch(df, i):
     return (df["high"].iloc[i] > max(df["high"].iloc[i-5:i]) and df["close"].iloc[i] > df["open"].iloc[i],
             df["low"].iloc[i] < min(df["low"].iloc[i-5:i]) and df["close"].iloc[i] < df["open"].iloc[i])
@@ -144,6 +135,34 @@ def generate_all_strategy_combinations(df):
             strategies.append((" + ".join([m[0] for m in combo]), strat))
     return strategies
 
+# === BACKTEST
+def backtest_strategy(df, strategy_function, sl_pips=150, tp1_pips=300):
+    trades = []
+    signals = strategy_function(df)
+    for signal in signals:
+        i = signal["index"]
+        if i >= len(df) - 1:
+            continue
+        entry = df.iloc[i]["close"]
+        future = df.iloc[i+1:i+20]
+        tp1 = entry + tp1_pips if signal["type"] == "buy" else entry - tp1_pips
+        sl  = entry - sl_pips if signal["type"] == "buy" else entry + sl_pips
+        hit_tp1 = hit_sl = False
+        for _, row in future.iterrows():
+            if signal["type"] == "buy":
+                if row["low"] <= sl: hit_sl = True; break
+                if row["high"] >= tp1: hit_tp1 = True; break
+            else:
+                if row["high"] >= sl: hit_sl = True; break
+                if row["low"] <= tp1: hit_tp1 = True; break
+        if hit_tp1 and not hit_sl:
+            trades.append({
+                "index": i, "type": signal["type"], "entry": entry,
+                "tp1": tp1, "tp2": entry + 1000 if signal["type"] == "buy" else entry - 1000,
+                "sl": sl, "time": df.iloc[i]["open_time"]
+            })
+    return trades
+
 # === FORMAT MESSAGE
 def format_telegram_message(trade):
     s = "ACHAT" if trade["type"] == "buy" else "VENTE"
@@ -155,40 +174,19 @@ def format_telegram_message(trade):
         f"SL : {trade['sl']:.2f}"
     )
 
-# === MOTEUR PRINCIPAL
+# === MOTEUR
 def main_loop():
-    df = get_binance_m5_bars_with_retry()
-    if df.empty:
-        send_telegram_message("Erreur : données Binance M5 non récupérables après 5 tentatives.")
-        return
-
-    df["ema21"] = df["close"].ewm(span=21).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
-    df["ema200"] = df["close"].ewm(span=200).mean()
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = -delta.clip(upper=0).rolling(14).mean()
-    rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    send_trade_test(df)
+    send_trade_test()
     last_alert = datetime.utcnow() - timedelta(hours=2)
 
     while True:
-        df = get_binance_m5_bars_with_retry()
+        df = get_fake_bars()
         if df.empty:
+            send_telegram_message("Erreur : données CoinMarketCap indisponibles.")
             time.sleep(300)
             continue
 
-        df["ema21"] = df["close"].ewm(span=21).mean()
-        df["ema50"] = df["close"].ewm(span=50).mean()
-        df["ema200"] = df["close"].ewm(span=200).mean()
-        delta = df["close"].diff()
-        gain = delta.clip(lower=0).rolling(14).mean()
-        loss = -delta.clip(upper=0).rolling(14).mean()
-        rs = gain / loss
-        df["rsi"] = 100 - (100 / (1 + rs))
-
+        df = compute_indicators(df)
         strategies = generate_all_strategy_combinations(df)
         found = False
         for name, strat in strategies:
