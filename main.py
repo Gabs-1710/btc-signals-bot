@@ -4,12 +4,14 @@ import time
 from datetime import datetime, timedelta
 from itertools import combinations
 
-# === CONFIGURATION
+# === CONFIG
 TWELVE_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
-MAX_PRICE_DIFF = 50  # tolérance PE vs prix actuel
-MINUTES_BETWEEN_SIGNALS = 10  # temporisation minimum entre deux signaux
+MAX_PRICE_DIFF = 50
+TP1_PIPS = 300
+TP2_PIPS = 1000
+SL_PIPS = 150
 
 # === TELEGRAM
 def send_telegram_message(text):
@@ -21,140 +23,70 @@ def send_telegram_message(text):
 
 # === PRIX LIVE
 def get_live_price():
-    url = f"https://api.twelvedata.com/price"
-    params = {"symbol": "BTC/USD", "apikey": TWELVE_API_KEY}
     try:
-        res = requests.get(url, params=params, timeout=10)
+        res = requests.get(
+            f"https://api.twelvedata.com/price",
+            params={"symbol": "BTC/USD", "apikey": TWELVE_API_KEY},
+            timeout=10
+        )
         return float(res.json()["price"])
     except:
         return None
 
 # === BOUGIES
-def get_bars():
+def get_last_candle():
     url = f"https://api.twelvedata.com/time_series"
     params = {
         "symbol": "BTC/USD",
         "interval": "5min",
-        "outputsize": 500,
+        "outputsize": 2,
         "apikey": TWELVE_API_KEY
     }
     try:
         res = requests.get(url, params=params, timeout=10)
-        data = res.json()
-        df = pd.DataFrame(data["values"])
+        data = res.json()["values"]
+        df = pd.DataFrame(data)
         df["datetime"] = pd.to_datetime(df["datetime"])
-        df = df.rename(columns={"datetime": "open_time"})
         for col in ["open", "high", "low", "close"]:
             df[col] = df[col].astype(float)
-        df = df.sort_values("open_time").reset_index(drop=True)
-        return df
+        df = df.sort_values("datetime").reset_index(drop=True)
+        return df.iloc[-2]  # dernière bougie clôturée
     except:
-        return pd.DataFrame()
+        return None
 
-# === INDICATEURS
-def add_indicators(df):
-    df["ema21"] = df["close"].ewm(span=21).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
-    df["ema200"] = df["close"].ewm(span=200).mean()
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = -delta.clip(upper=0).rolling(14).mean()
-    rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-    return df
+# === STRATÉGIES GAGNANTES (exemples ici)
+def apply_strategies(candle):
+    signals = []
+    if candle["close"] > candle["open"] and (candle["close"] - candle["open"]) > 50:
+        signals.append("buy")
+    if candle["close"] < candle["open"] and (candle["open"] - candle["close"]) > 50:
+        signals.append("sell")
+    return signals
 
-# === MODULES
-def module_choch(df, i):
-    return df["high"][i] > max(df["high"][i-5:i]) and df["close"][i] > df["open"][i], \
-           df["low"][i] < min(df["low"][i-5:i]) and df["close"][i] < df["open"][i]
+# === VALIDATION LIVE
+def validate_trade(type_, entry, price_live):
+    tp1 = entry + TP1_PIPS if type_ == "buy" else entry - TP1_PIPS
+    tp2 = entry + TP2_PIPS if type_ == "buy" else entry - TP2_PIPS
+    sl = entry - SL_PIPS if type_ == "buy" else entry + SL_PIPS
 
-def module_order_block(df, i):
-    return df["low"][i] < df["low"][i-1] and df["close"][i] > df["open"][i], \
-           df["high"][i] > df["high"][i-1] and df["close"][i] < df["open"][i]
+    if abs(price_live - entry) > MAX_PRICE_DIFF:
+        return None
+    if type_ == "buy" and price_live <= sl:
+        return None
+    if type_ == "sell" and price_live >= sl:
+        return None
 
-def module_fvg(df, i):
-    body = abs(df["close"][i] - df["open"][i])
-    prev = abs(df["close"][i-1] - df["open"][i-1])
-    next_ = abs(df["close"][i+1] - df["open"][i+1])
-    return body > prev * 1.5 and body > next_ * 1.5 and df["close"][i] > df["open"][i], \
-           body > prev * 1.5 and body > next_ * 1.5 and df["close"][i] < df["open"][i]
-
-def module_ema(df, i):
-    return df["ema21"][i] > df["ema50"][i] > df["ema200"][i], \
-           df["ema21"][i] < df["ema50"][i] < df["ema200"][i]
-
-def module_rsi(df, i):
-    return df["rsi"][i] < 30, df["rsi"][i] > 70
-
-def module_double_bottom(df, i):
-    return abs(df["low"][i] - df["low"][i-3]) < df["low"][i] * 0.001, \
-           abs(df["high"][i] - df["high"][i-3]) < df["high"][i] * 0.001
-
-# === STRATÉGIES
-def generate_strategies(df):
-    modules = [
-        ("CHoCH", module_choch),
-        ("OrderBlock", module_order_block),
-        ("FVG", module_fvg),
-        ("EMA", module_ema),
-        ("RSI", module_rsi),
-        ("DoubleBottom", module_double_bottom)
-    ]
-    strategies = []
-    for r in range(2, len(modules)+1):
-        for combo in combinations(modules, r):
-            funcs = [m[1] for m in combo]
-            def strat(df, funcs=funcs):
-                signals = []
-                for i in range(20, len(df)-20):
-                    if all(f(df, i)[0] for f in funcs):
-                        signals.append({"index": i, "type": "buy", "time": df["open_time"][i]})
-                    elif all(f(df, i)[1] for f in funcs):
-                        signals.append({"index": i, "type": "sell", "time": df["open_time"][i]})
-                return signals
-            strategies.append((" + ".join([m[0] for m in combo]), strat))
-    return strategies
-
-# === BACKTEST
-def backtest(df, strategy_fn, price_live, sl_pips=150, tp1_pips=300):
-    trades = []
-    signals = strategy_fn(df)
-    for s in signals:
-        i = s["index"]
-        entry = df["close"][i]
-        if abs(entry - price_live) > MAX_PRICE_DIFF:
-            continue
-
-        future = df.iloc[i+1:i+20]
-        tp1 = entry + tp1_pips if s["type"] == "buy" else entry - tp1_pips
-        sl = entry - sl_pips if s["type"] == "buy" else entry + sl_pips
-        hit_tp1 = hit_sl = False
-
-        for _, row in future.iterrows():
-            if s["type"] == "buy":
-                if row["low"] <= sl: hit_sl = True; break
-                if row["high"] >= tp1: hit_tp1 = True; break
-            else:
-                if row["high"] >= sl: hit_sl = True; break
-                if row["low"] <= tp1: hit_tp1 = True; break
-
-        if hit_tp1 and not hit_sl:
-            # Vérification finale en live
-            if s["type"] == "buy" and price_live <= sl: continue
-            if s["type"] == "sell" and price_live >= sl: continue
-            trades.append({
-                "type": s["type"],
-                "entry": entry,
-                "tp1": tp1,
-                "tp2": entry + 1000 if s["type"] == "buy" else entry - 1000,
-                "sl": sl,
-                "signal_time": s["time"],
-                "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-            })
-    return trades
+    return {
+        "type": type_,
+        "entry": entry,
+        "tp1": tp1,
+        "tp2": tp2,
+        "sl": sl,
+        "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    }
 
 # === FORMATAGE
-def format_message(trade):
+def format_signal(trade):
     label = "ACHAT" if trade["type"] == "buy" else "VENTE"
     return (
         f"{label}\n"
@@ -165,63 +97,32 @@ def format_message(trade):
         f"[{trade['time']}]"
     )
 
-def send_trade_test(df):
-    last = df.iloc[-1]
-    entry = last["close"]
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    msg = (
-        f"ACHAT (Trade test)\n"
-        f"PE : {entry:.2f}\n"
-        f"TP1 : {entry+300:.2f}\n"
-        f"TP2 : {entry+1000:.2f}\n"
-        f"SL : {entry-150:.2f}\n"
-        f"[{now}]"
-    )
-    send_telegram_message(msg)
-
-# === MOTEUR
+# === MAIN LOOP
 def main_loop():
-    df = get_bars()
-    if df.empty:
-        send_telegram_message("Erreur récupération données.")
-        return
-
-    df = add_indicators(df)
-    send_trade_test(df)
+    send_telegram_message("Trade test (démarrage moteur)")
     trades_sent = set()
-    last_signal_time = datetime.utcnow() - timedelta(minutes=MINUTES_BETWEEN_SIGNALS)
-    last_alert = datetime.utcnow() - timedelta(hours=2)
 
     while True:
-        df = get_bars()
-        if df.empty:
-            time.sleep(300)
-            continue
-
-        df = add_indicators(df)
+        candle = get_last_candle()
         price_live = get_live_price()
-        if price_live is None:
+
+        if candle is None or price_live is None:
             time.sleep(300)
             continue
 
-        strategies = generate_strategies(df)
-        found = False
-        for name, strat in strategies:
-            trades = backtest(df, strat, price_live)
-            for t in trades:
-                key = f"{t['type']}_{t['signal_time']}"
-                if key not in trades_sent and datetime.utcnow() - last_signal_time > timedelta(minutes=MINUTES_BETWEEN_SIGNALS):
-                    trades_sent.add(key)
-                    last_signal_time = datetime.utcnow()
-                    send_telegram_message(format_message(t))
-                    found = True
-                    break
-            if found:
-                break
+        entry = candle["close"]
+        timestamp = candle["datetime"]
 
-        if not found and datetime.utcnow() - last_alert > timedelta(hours=2):
-            send_telegram_message("Aucun signal parfait détecté pour le moment.")
-            last_alert = datetime.utcnow()
+        signals = apply_strategies(candle)
+        for sig in signals:
+            key = f"{sig}_{timestamp}"
+            if key in trades_sent:
+                continue
+            trade = validate_trade(sig, entry, price_live)
+            if trade:
+                send_telegram_message(format_signal(trade))
+                trades_sent.add(key)
+                break  # un seul trade par cycle
 
         time.sleep(300)
 
