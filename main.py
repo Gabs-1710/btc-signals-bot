@@ -4,19 +4,19 @@ import time
 from datetime import datetime, timedelta
 from itertools import combinations
 
-# === CONFIG
+# === CONFIGURATION
 TWELVE_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
-MAX_PRICE_DIFF = 50  # Tolérance en pips pour valider un trade encore exploitable
+MAX_PRICE_DIFF = 50  # Tolérance pour que le prix soit encore exploitable
 
-# === TELEGRAM
+# === ENVOI TELEGRAM
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
     except:
-        print("Erreur Telegram")
+        print("Erreur envoi Telegram")
 
 # === PRIX LIVE
 def get_live_price():
@@ -28,7 +28,7 @@ def get_live_price():
     except:
         return None
 
-# === BOUGIES
+# === RÉCUPÉRATION DES BOUGIES
 def get_bars():
     url = f"https://api.twelvedata.com/time_series"
     params = {
@@ -50,7 +50,7 @@ def get_bars():
     except:
         return pd.DataFrame()
 
-# === INDICATEURS
+# === INDICATEURS TECHNIQUES
 def add_indicators(df):
     df["ema21"] = df["close"].ewm(span=21).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
@@ -62,7 +62,7 @@ def add_indicators(df):
     df["rsi"] = 100 - (100 / (1 + rs))
     return df
 
-# === MODULES STRATÉGIQUES
+# === MODULES DE STRATÉGIES
 def module_choch(df, i):
     return df["high"][i] > max(df["high"][i-5:i]) and df["close"][i] > df["open"][i], \
            df["low"][i] < min(df["low"][i-5:i]) and df["close"][i] < df["open"][i]
@@ -89,7 +89,7 @@ def module_double_bottom(df, i):
     return abs(df["low"][i] - df["low"][i-3]) < df["low"][i] * 0.001, \
            abs(df["high"][i] - df["high"][i-3]) < df["high"][i] * 0.001
 
-# === STRATÉGIES
+# === STRATÉGIES MULTI-COMBINAISONS
 def generate_strategies(df):
     modules = [
         ("CHoCH", module_choch),
@@ -120,34 +120,51 @@ def backtest(df, strategy_fn, price_live, sl_pips=150, tp1_pips=300):
     signals = strategy_fn(df)
     for s in signals:
         i = s["index"]
-        if i >= len(df) - 1: continue
+        if i >= len(df) - 1:
+            continue
         entry = df["close"][i]
         if abs(entry - price_live) > MAX_PRICE_DIFF:
-            continue  # pas tradable
+            continue
 
         future = df.iloc[i+1:i+20]
         tp1 = entry + tp1_pips if s["type"] == "buy" else entry - tp1_pips
         sl = entry - sl_pips if s["type"] == "buy" else entry + sl_pips
         hit_tp1 = hit_sl = False
+
         for _, row in future.iterrows():
             if s["type"] == "buy":
-                if row["low"] <= sl: hit_sl = True; break
-                if row["high"] >= tp1: hit_tp1 = True; break
+                if row["low"] <= sl:
+                    hit_sl = True
+                    break
+                if row["high"] >= tp1:
+                    hit_tp1 = True
+                    break
             else:
-                if row["high"] >= sl: hit_sl = True; break
-                if row["low"] <= tp1: hit_tp1 = True; break
+                if row["high"] >= sl:
+                    hit_sl = True
+                    break
+                if row["low"] <= tp1:
+                    hit_tp1 = True
+                    break
+
         if hit_tp1 and not hit_sl:
+            # Sécurité supplémentaire : le SL ne doit pas avoir été touché même maintenant
+            if s["type"] == "buy" and price_live <= sl:
+                continue
+            if s["type"] == "sell" and price_live >= sl:
+                continue
             trades.append({
                 "type": s["type"],
                 "entry": entry,
                 "tp1": tp1,
                 "tp2": entry + 1000 if s["type"] == "buy" else entry - 1000,
                 "sl": sl,
+                "origin_index": i,
                 "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
             })
     return trades
 
-# === FORMATTAGE
+# === FORMATAGE
 def format_message(trade):
     label = "ACHAT" if trade["type"] == "buy" else "VENTE"
     return (
@@ -173,11 +190,11 @@ def send_trade_test(df):
     )
     send_telegram_message(msg)
 
-# === BOUCLE PRINCIPALE
+# === MOTEUR PRINCIPAL
 def main_loop():
     df = get_bars()
     if df.empty:
-        send_telegram_message("Erreur récupération données TwelveData.")
+        send_telegram_message("Erreur récupération données.")
         return
 
     df = add_indicators(df)
@@ -202,7 +219,7 @@ def main_loop():
         for name, strat in strategies:
             trades = backtest(df, strat, price_live)
             for t in trades:
-                key = f"{t['type']}_{round(t['entry'], 2)}_{t['time']}"
+                key = f"{t['type']}_{t['origin_index']}_{round(t['entry'], 2)}"
                 if key not in trades_sent:
                     trades_sent.add(key)
                     send_telegram_message(format_message(t))
