@@ -2,7 +2,6 @@ import requests
 import pandas as pd
 import time
 from datetime import datetime, timedelta
-from itertools import combinations
 
 # === CONFIG
 TWELVE_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
@@ -33,13 +32,13 @@ def get_live_price():
     except:
         return None
 
-# === BOUGIES
-def get_last_candle():
+# === DERNIÈRES BOUGIES
+def get_recent_candles():
     url = f"https://api.twelvedata.com/time_series"
     params = {
         "symbol": "BTC/USD",
         "interval": "5min",
-        "outputsize": 2,
+        "outputsize": 3,
         "apikey": TWELVE_API_KEY
     }
     try:
@@ -50,34 +49,46 @@ def get_last_candle():
         for col in ["open", "high", "low", "close"]:
             df[col] = df[col].astype(float)
         df = df.sort_values("datetime").reset_index(drop=True)
-        return df.iloc[-2]  # dernière bougie clôturée
+        return df.iloc[-2], df.iloc[-1]  # dernière bougie clôturée, bougie suivante
     except:
-        return None
+        return None, None
 
-# === STRATÉGIES GAGNANTES (exemples ici)
-def apply_strategies(candle):
-    signals = []
-    if candle["close"] > candle["open"] and (candle["close"] - candle["open"]) > 50:
-        signals.append("buy")
-    if candle["close"] < candle["open"] and (candle["open"] - candle["close"]) > 50:
-        signals.append("sell")
-    return signals
+# === STRATÉGIE SIMPLE (exemple)
+def signal_from_candle(candle):
+    body = abs(candle["close"] - candle["open"])
+    if candle["close"] > candle["open"] and body > 50:
+        return "buy"
+    if candle["close"] < candle["open"] and body > 50:
+        return "sell"
+    return None
 
-# === VALIDATION LIVE
-def validate_trade(type_, entry, price_live):
-    tp1 = entry + TP1_PIPS if type_ == "buy" else entry - TP1_PIPS
-    tp2 = entry + TP2_PIPS if type_ == "buy" else entry - TP2_PIPS
-    sl = entry - SL_PIPS if type_ == "buy" else entry + SL_PIPS
-
-    if abs(price_live - entry) > MAX_PRICE_DIFF:
-        return None
-    if type_ == "buy" and price_live <= sl:
-        return None
-    if type_ == "sell" and price_live >= sl:
+# === VALIDATION STRICTE
+def validate_signal(signal_type, entry, future_candle, price_live):
+    if signal_type == "buy":
+        tp1 = entry + TP1_PIPS
+        tp2 = entry + TP2_PIPS
+        sl = entry - SL_PIPS
+        if future_candle["low"] <= sl:
+            return None
+        if future_candle["high"] < tp1:
+            return None
+        if price_live <= sl or abs(price_live - entry) > MAX_PRICE_DIFF:
+            return None
+    elif signal_type == "sell":
+        tp1 = entry - TP1_PIPS
+        tp2 = entry - TP2_PIPS
+        sl = entry + SL_PIPS
+        if future_candle["high"] >= sl:
+            return None
+        if future_candle["low"] > tp1:
+            return None
+        if price_live >= sl or abs(price_live - entry) > MAX_PRICE_DIFF:
+            return None
+    else:
         return None
 
     return {
-        "type": type_,
+        "type": signal_type,
         "entry": entry,
         "tp1": tp1,
         "tp2": tp2,
@@ -86,7 +97,7 @@ def validate_trade(type_, entry, price_live):
     }
 
 # === FORMATAGE
-def format_signal(trade):
+def format_trade(trade):
     label = "ACHAT" if trade["type"] == "buy" else "VENTE"
     return (
         f"{label}\n"
@@ -97,32 +108,27 @@ def format_signal(trade):
         f"[{trade['time']}]"
     )
 
-# === MAIN LOOP
+# === BOUCLE PRINCIPALE
 def main_loop():
-    send_telegram_message("Trade test (démarrage moteur)")
-    trades_sent = set()
+    send_telegram_message("Trade test (moteur sécurisé prêt)")
+    last_sent_time = None
 
     while True:
-        candle = get_last_candle()
+        candle, next_candle = get_recent_candles()
         price_live = get_live_price()
 
-        if candle is None or price_live is None:
+        if candle is None or next_candle is None or price_live is None:
             time.sleep(300)
             continue
 
-        entry = candle["close"]
-        timestamp = candle["datetime"]
-
-        signals = apply_strategies(candle)
-        for sig in signals:
-            key = f"{sig}_{timestamp}"
-            if key in trades_sent:
-                continue
-            trade = validate_trade(sig, entry, price_live)
+        signal = signal_from_candle(candle)
+        if signal:
+            entry = candle["close"]
+            trade = validate_signal(signal, entry, next_candle, price_live)
             if trade:
-                send_telegram_message(format_signal(trade))
-                trades_sent.add(key)
-                break  # un seul trade par cycle
+                if not last_sent_time or (datetime.utcnow() - last_sent_time > timedelta(minutes=10)):
+                    send_telegram_message(format_trade(trade))
+                    last_sent_time = datetime.utcnow()
 
         time.sleep(300)
 
