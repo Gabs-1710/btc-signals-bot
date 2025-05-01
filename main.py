@@ -8,7 +8,7 @@ from itertools import combinations
 TWELVE_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
-MAX_PRICE_DIFF = 50  # Tolérance de ±50 pips pour considérer le signal tradable
+MAX_PRICE_DIFF = 50  # Tolérance en pips pour valider un trade encore exploitable
 
 # === TELEGRAM
 def send_telegram_message(text):
@@ -34,7 +34,7 @@ def get_bars():
     params = {
         "symbol": "BTC/USD",
         "interval": "5min",
-        "outputsize": 100,
+        "outputsize": 500,
         "apikey": TWELVE_API_KEY
     }
     try:
@@ -89,7 +89,7 @@ def module_double_bottom(df, i):
     return abs(df["low"][i] - df["low"][i-3]) < df["low"][i] * 0.001, \
            abs(df["high"][i] - df["high"][i-3]) < df["high"][i] * 0.001
 
-# === COMBOS DE STRATÉGIES
+# === STRATÉGIES
 def generate_strategies(df):
     modules = [
         ("CHoCH", module_choch),
@@ -105,23 +105,26 @@ def generate_strategies(df):
             funcs = [m[1] for m in combo]
             def strat(df, funcs=funcs):
                 signals = []
-                i = len(df) - 2  # Dernière bougie clôturée
-                if all(f(df, i)[0] for f in funcs):
-                    signals.append({"index": i, "type": "buy"})
-                elif all(f(df, i)[1] for f in funcs):
-                    signals.append({"index": i, "type": "sell"})
+                for i in range(20, len(df)-20):
+                    if all(f(df, i)[0] for f in funcs):
+                        signals.append({"index": i, "type": "buy"})
+                    elif all(f(df, i)[1] for f in funcs):
+                        signals.append({"index": i, "type": "sell"})
                 return signals
             strategies.append((" + ".join([m[0] for m in combo]), strat))
     return strategies
 
-# === BACKTEST ULTRA SÉCURISÉ
-def backtest(df, strategy_fn, sl_pips=150, tp1_pips=300):
+# === BACKTEST + VALIDATION LIVE
+def backtest(df, strategy_fn, price_live, sl_pips=150, tp1_pips=300):
     trades = []
     signals = strategy_fn(df)
     for s in signals:
         i = s["index"]
         if i >= len(df) - 1: continue
         entry = df["close"][i]
+        if abs(entry - price_live) > MAX_PRICE_DIFF:
+            continue  # pas tradable
+
         future = df.iloc[i+1:i+20]
         tp1 = entry + tp1_pips if s["type"] == "buy" else entry - tp1_pips
         sl = entry - sl_pips if s["type"] == "buy" else entry + sl_pips
@@ -144,6 +147,7 @@ def backtest(df, strategy_fn, sl_pips=150, tp1_pips=300):
             })
     return trades
 
+# === FORMATTAGE
 def format_message(trade):
     label = "ACHAT" if trade["type"] == "buy" else "VENTE"
     return (
@@ -169,7 +173,7 @@ def send_trade_test(df):
     )
     send_telegram_message(msg)
 
-# === MAIN LOOP
+# === BOUCLE PRINCIPALE
 def main_loop():
     df = get_bars()
     if df.empty:
@@ -196,14 +200,13 @@ def main_loop():
         strategies = generate_strategies(df)
         found = False
         for name, strat in strategies:
-            trades = backtest(df, strat)
+            trades = backtest(df, strat, price_live)
             for t in trades:
-                key = f"{t['type']}_{round(t['entry'],2)}_{t['time']}"
+                key = f"{t['type']}_{round(t['entry'], 2)}_{t['time']}"
                 if key not in trades_sent:
-                    if abs(t["entry"] - price_live) <= MAX_PRICE_DIFF:
-                        trades_sent.add(key)
-                        send_telegram_message(format_message(t))
-                        found = True
+                    trades_sent.add(key)
+                    send_telegram_message(format_message(t))
+                    found = True
             if found:
                 break
 
