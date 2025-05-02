@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 TWELVE_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
-MAX_PRICE_DIFF = 50
+MAX_PRICE_DIFF = 80  # élargi
 TP1_PIPS = 300
 TP2_PIPS = 1000
 SL_PIPS = 150
@@ -49,28 +49,28 @@ def get_recent_candles():
         for col in ["open", "high", "low", "close"]:
             df[col] = df[col].astype(float)
         df = df.sort_values("datetime").reset_index(drop=True)
-        return df.iloc[-2], df.iloc[-1]  # dernière bougie clôturée, bougie suivante
+        return df.iloc[-2], df.iloc[-1]
     except:
         return None, None
 
-# === STRATÉGIE SIMPLE (exemple)
+# === STRATÉGIE SIMPLE
 def signal_from_candle(candle):
     body = abs(candle["close"] - candle["open"])
-    if candle["close"] > candle["open"] and body > 50:
+    if candle["close"] > candle["open"] and body > 30:  # corps réduit
         return "buy"
-    if candle["close"] < candle["open"] and body > 50:
+    if candle["close"] < candle["open"] and body > 30:
         return "sell"
     return None
 
-# === VALIDATION STRICTE
+# === VALIDATION ADAPTÉE
 def validate_signal(signal_type, entry, future_candle, price_live):
     if signal_type == "buy":
         tp1 = entry + TP1_PIPS
         tp2 = entry + TP2_PIPS
         sl = entry - SL_PIPS
-        if future_candle["low"] <= sl:
-            return None
         if future_candle["high"] < tp1:
+            return None
+        if future_candle["low"] < sl:
             return None
         if price_live <= sl or abs(price_live - entry) > MAX_PRICE_DIFF:
             return None
@@ -78,9 +78,9 @@ def validate_signal(signal_type, entry, future_candle, price_live):
         tp1 = entry - TP1_PIPS
         tp2 = entry - TP2_PIPS
         sl = entry + SL_PIPS
-        if future_candle["high"] >= sl:
-            return None
         if future_candle["low"] > tp1:
+            return None
+        if future_candle["high"] > sl:
             return None
         if price_live >= sl or abs(price_live - entry) > MAX_PRICE_DIFF:
             return None
@@ -110,7 +110,7 @@ def format_trade(trade):
 
 # === BOUCLE PRINCIPALE
 def main_loop():
-    send_telegram_message("Trade test (moteur sécurisé prêt)")
+    send_telegram_message("Trade test (moteur ajusté pour signaux quotidiens sécurisés)")
     last_sent_time = None
     last_status_time = time.time()
 
@@ -134,7 +134,6 @@ def main_loop():
                     last_sent_time = datetime.utcnow()
                     sent = True
 
-        # Message toutes les 2h s’il ne s’est rien passé
         now = time.time()
         if not sent and now - last_status_time > 7200:
             current_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
