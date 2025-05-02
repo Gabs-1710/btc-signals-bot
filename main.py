@@ -112,6 +112,7 @@ def format_trade(trade):
 def main_loop():
     send_telegram_message("Trade test (moteur sécurisé prêt)")
     last_sent_time = None
+    last_status_time = time.time()
 
     while True:
         candle, next_candle = get_recent_candles()
@@ -122,6 +123,8 @@ def main_loop():
             continue
 
         signal = signal_from_candle(candle)
+        sent = False
+
         if signal:
             entry = candle["close"]
             trade = validate_signal(signal, entry, next_candle, price_live)
@@ -129,6 +132,14 @@ def main_loop():
                 if not last_sent_time or (datetime.utcnow() - last_sent_time > timedelta(minutes=10)):
                     send_telegram_message(format_trade(trade))
                     last_sent_time = datetime.utcnow()
+                    sent = True
+
+        # Message toutes les 2h s’il ne s’est rien passé
+        now = time.time()
+        if not sent and now - last_status_time > 7200:
+            current_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            send_telegram_message(f"Aucun signal parfait détecté pour le moment.\n[{current_time}]")
+            last_status_time = now
 
         time.sleep(300)
 
