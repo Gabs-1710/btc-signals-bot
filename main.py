@@ -88,4 +88,69 @@ def simulate_future(df, i, entry, signal_type, price_live):
                 return dict(type="sell", entry=entry, tp1=tp1, tp2=tp2, sl=sl)
     return None
 
-# === FORMAT
+# === FORMATAGE
+def format_signal(trade, test=False):
+    label = "ACHAT" if trade["type"] == "buy" else "VENTE"
+    prefix = f"{label} (Trade test)" if test else label
+    return (
+        f"{prefix}\n"
+        f"PE : {trade['entry']:.2f}\n"
+        f"TP1 : {trade['tp1']:.2f}\n"
+        f"TP2 : {trade['tp2']:.2f}\n"
+        f"SL : {trade['sl']:.2f}"
+    )
+
+# === MOTEUR
+def main_loop():
+    trades_sent = set()
+    last_status = time.time()
+
+    # Envoi Trade Test simulé dès le lancement
+    price = get_live_price()
+    if price:
+        trade_test = {
+            "type": "buy",
+            "entry": price,
+            "tp1": price + TP1_PIPS,
+            "tp2": price + TP2_PIPS,
+            "sl": price - SL_PIPS
+        }
+        send_telegram_message(format_signal(trade_test, test=True))
+
+    while True:
+        df = get_candles()
+        price_live = get_live_price()
+
+        if df.empty or price_live is None:
+            time.sleep(300)
+            continue
+
+        for i in range(len(df) - 10, len(df) - 1):
+            if i <= 1:
+                continue
+            signal = None
+            if is_strong_bullish(df, i):
+                signal = "buy"
+            elif is_strong_bearish(df, i):
+                signal = "sell"
+
+            if signal:
+                key = f"{signal}_{df['datetime'][i]}"
+                if key in trades_sent:
+                    continue
+                entry = df["close"][i]
+                trade = simulate_future(df, i, entry, signal, price_live)
+                if trade:
+                    send_telegram_message(format_signal(trade))
+                    trades_sent.add(key)
+                    break
+
+        if time.time() - last_status > 7200:
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            send_telegram_message(f"Aucun signal parfait détecté pour le moment.\n[{now}]")
+            last_status = time.time()
+
+        time.sleep(300)
+
+if __name__ == "__main__":
+    main_loop()
