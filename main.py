@@ -1,156 +1,127 @@
 import requests
-import pandas as pd
 import time
 from datetime import datetime
+import pytz
 
-# === CONFIG
-TWELVE_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
+# === CONFIGURATION ===
+API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
-MAX_PRICE_DIFF = 80
-TP1_PIPS = 300
-TP2_PIPS = 1000
-SL_PIPS = 150
+SYMBOL = "BTC/USD"
+INTERVAL = "5min"
+TP1 = 300
+TP2 = 1000
+SL = 150
+PE_TOLERANCE = 50
+MAX_HISTORY = 500
 
-# === TELEGRAM
-def send_telegram_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+# === TELEGRAM ===
+def send_telegram(msg):
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
     except:
-        print("Erreur Telegram")
+        pass
 
-# === PRIX ACTUEL
+# === PRIX EN TEMPS RÉEL ===
 def get_live_price():
+    url = f"https://api.twelvedata.com/price?symbol={SYMBOL}&apikey={API_KEY}"
     try:
-        res = requests.get(
-            "https://api.twelvedata.com/price",
-            params={"symbol": "BTC/USD", "apikey": TWELVE_API_KEY},
-            timeout=10
-        )
+        res = requests.get(url, timeout=10)
         return float(res.json()["price"])
     except:
         return None
 
-# === BOUGIES M5
+# === RÉCUPÉRATION DES BOUGIES ===
 def get_candles():
+    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={MAX_HISTORY}&apikey={API_KEY}"
     try:
-        res = requests.get(
-            "https://api.twelvedata.com/time_series",
-            params={
-                "symbol": "BTC/USD",
-                "interval": "5min",
-                "outputsize": 500,
-                "apikey": TWELVE_API_KEY
-            },
-            timeout=10
-        )
-        data = res.json()["values"]
-        df = pd.DataFrame(data)
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        for col in ["open", "high", "low", "close"]:
-            df[col] = df[col].astype(float)
-        df = df.sort_values("datetime").reset_index(drop=True)
-        return df
+        res = requests.get(url, timeout=10).json()
+        if "values" not in res:
+            return []
+        candles = res["values"]
+        for c in candles:
+            for key in ["open", "high", "low", "close"]:
+                c[key] = float(c[key])
+        return list(reversed(candles))
     except:
-        return pd.DataFrame()
+        return []
 
-# === DÉTECTION CONTEXTE
-def is_strong_bullish(df, i):
-    body = df["close"][i] - df["open"][i]
-    return body > 30 and df["close"][i] > df["open"][i] and df["close"][i] > df["close"][i-1]
+# === SIMULATION DU FUTUR ===
+def simulate_future(df, i, entry, direction):
+    future = df[i+1:]
+    tp1 = entry + TP1 if direction == "ACHAT" else entry - TP1
+    tp2 = entry + TP2 if direction == "ACHAT" else entry - TP2
+    sl = entry - SL if direction == "ACHAT" else entry + SL
 
-def is_strong_bearish(df, i):
-    body = df["open"][i] - df["close"][i]
-    return body > 30 and df["close"][i] < df["open"][i] and df["close"][i] < df["close"][i-1]
-
-# === VALIDATION TP1/SL
-def simulate_future(df, i, entry, signal_type, price_live):
-    future = df.iloc[i+1:]
-    tp1 = entry + TP1_PIPS if signal_type == "buy" else entry - TP1_PIPS
-    tp2 = entry + TP2_PIPS if signal_type == "buy" else entry - TP2_PIPS
-    sl  = entry - SL_PIPS     if signal_type == "buy" else entry + SL_PIPS
-
-    for _, row in future.iterrows():
-        if signal_type == "buy":
-            if row["low"] <= sl:
+    for candle in future:
+        if direction == "ACHAT":
+            if candle["low"] <= sl:
                 return None
-            if row["high"] >= tp1:
-                if price_live <= sl or abs(price_live - entry) > MAX_PRICE_DIFF:
-                    return None
-                return dict(type="buy", entry=entry, tp1=tp1, tp2=tp2, sl=sl)
+            if candle["high"] >= tp1:
+                return {"type": "ACHAT", "pe": entry, "tp1": tp1, "tp2": tp2, "sl": sl}
         else:
-            if row["high"] >= sl:
+            if candle["high"] >= sl:
                 return None
-            if row["low"] <= tp1:
-                if price_live >= sl or abs(price_live - entry) > MAX_PRICE_DIFF:
-                    return None
-                return dict(type="sell", entry=entry, tp1=tp1, tp2=tp2, sl=sl)
+            if candle["low"] <= tp1:
+                return {"type": "VENTE", "pe": entry, "tp1": tp1, "tp2": tp2, "sl": sl}
     return None
 
-# === FORMATAGE
-def format_signal(trade, test=False):
-    label = "ACHAT" if trade["type"] == "buy" else "VENTE"
-    prefix = f"{label} (Trade test)" if test else label
+# === DÉTECTION STRATÉGIES COMBINÉES ===
+def detect_strategic_signal(df, price_now):
+    for i in range(2, len(df)-10):
+        c1, c2 = df[i-2], df[i-1]
+        # Exemple de stratégie combinée à ajuster :
+        if c1["close"] < c1["open"] and c2["close"] > c2["open"] and c2["close"] > c1["high"]:
+            entry = c2["close"]
+            if abs(price_now - entry) <= PE_TOLERANCE:
+                sim = simulate_future(df, i, entry, "ACHAT")
+                if sim and abs(price_now - sim["pe"]) <= PE_TOLERANCE:
+                    return sim
+        if c1["close"] > c1["open"] and c2["close"] < c2["open"] and c2["close"] < c1["low"]:
+            entry = c2["close"]
+            if abs(price_now - entry) <= PE_TOLERANCE:
+                sim = simulate_future(df, i, entry, "VENTE")
+                if sim and abs(price_now - sim["pe"]) <= PE_TOLERANCE:
+                    return sim
+    return None
+
+# === FORMAT MESSAGE ===
+def format_trade_msg(trade):
     return (
-        f"{prefix}\n"
-        f"PE : {trade['entry']:.2f}\n"
+        f"{trade['type']}\n"
+        f"PE : {trade['pe']:.2f}\n"
         f"TP1 : {trade['tp1']:.2f}\n"
         f"TP2 : {trade['tp2']:.2f}\n"
-        f"SL : {trade['sl']:.2f}"
+        f"SL : {trade['sl']:.2f}\n"
+        f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]"
     )
 
-# === MOTEUR
-def main_loop():
-    trades_sent = set()
-    last_status = time.time()
-
-    # Envoi Trade Test simulé dès le lancement
-    price = get_live_price()
-    if price:
-        trade_test = {
-            "type": "buy",
-            "entry": price,
-            "tp1": price + TP1_PIPS,
-            "tp2": price + TP2_PIPS,
-            "sl": price - SL_PIPS
-        }
-        send_telegram_message(format_signal(trade_test, test=True))
+# === MAIN LOOP ===
+def main():
+    send_telegram("ACHAT (Trade test)\nPE : 94153.27\nTP1 : 94453.27\nTP2 : 95153.27\nSL : 94003.27")
+    last_msg = time.time()
+    sent_signals = set()
 
     while True:
-        df = get_candles()
-        price_live = get_live_price()
-
-        if df.empty or price_live is None:
-            time.sleep(300)
+        candles = get_candles()
+        price = get_live_price()
+        if not candles or price is None:
+            time.sleep(60)
             continue
 
-        for i in range(len(df) - 10, len(df) - 1):
-            if i <= 1:
-                continue
-            signal = None
-            if is_strong_bullish(df, i):
-                signal = "buy"
-            elif is_strong_bearish(df, i):
-                signal = "sell"
+        trade = detect_strategic_signal(candles, price)
+        if trade:
+            key = f"{trade['type']}_{int(trade['pe'])}"
+            if key not in sent_signals:
+                send_telegram(format_trade_msg(trade))
+                sent_signals.add(key)
 
-            if signal:
-                key = f"{signal}_{df['datetime'][i]}"
-                if key in trades_sent:
-                    continue
-                entry = df["close"][i]
-                trade = simulate_future(df, i, entry, signal, price_live)
-                if trade:
-                    send_telegram_message(format_signal(trade))
-                    trades_sent.add(key)
-                    break
-
-        if time.time() - last_status > 7200:
-            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-            send_telegram_message(f"Aucun signal parfait détecté pour le moment.\n[{now}]")
-            last_status = time.time()
+        if time.time() - last_msg > 7200:
+            send_telegram(f"Aucun signal parfait détecté pour le moment.\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]")
+            last_msg = time.time()
 
         time.sleep(300)
 
 if __name__ == "__main__":
-    main_loop()
+    main()
