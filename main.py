@@ -15,6 +15,9 @@ SL = 150
 PE_TOLERANCE = 50
 MAX_HISTORY = 500
 
+last_direction = None
+sent_signals = set()
+
 # === TELEGRAM ===
 def send_telegram(msg):
     try:
@@ -67,22 +70,24 @@ def simulate_future(df, i, entry, direction):
                 return {"type": "VENTE", "pe": entry, "tp1": tp1, "tp2": tp2, "sl": sl}
     return None
 
-# === DÉTECTION STRATÉGIES COMBINÉES ===
+# === DÉTECTION STRATÉGIES PUISSANTES ===
 def detect_strategic_signal(df, price_now):
+    global last_direction
     for i in range(2, len(df)-10):
         c1, c2 = df[i-2], df[i-1]
-        # Exemple de stratégie combinée à ajuster :
         if c1["close"] < c1["open"] and c2["close"] > c2["open"] and c2["close"] > c1["high"]:
             entry = c2["close"]
-            if abs(price_now - entry) <= PE_TOLERANCE:
+            if abs(price_now - entry) <= PE_TOLERANCE and last_direction != "VENTE":
                 sim = simulate_future(df, i, entry, "ACHAT")
                 if sim and abs(price_now - sim["pe"]) <= PE_TOLERANCE:
+                    last_direction = "ACHAT"
                     return sim
         if c1["close"] > c1["open"] and c2["close"] < c2["open"] and c2["close"] < c1["low"]:
             entry = c2["close"]
-            if abs(price_now - entry) <= PE_TOLERANCE:
+            if abs(price_now - entry) <= PE_TOLERANCE and last_direction != "ACHAT":
                 sim = simulate_future(df, i, entry, "VENTE")
                 if sim and abs(price_now - sim["pe"]) <= PE_TOLERANCE:
+                    last_direction = "VENTE"
                     return sim
     return None
 
@@ -99,9 +104,9 @@ def format_trade_msg(trade):
 
 # === MAIN LOOP ===
 def main():
+    global sent_signals
     send_telegram("ACHAT (Trade test)\nPE : 94153.27\nTP1 : 94453.27\nTP2 : 95153.27\nSL : 94003.27")
     last_msg = time.time()
-    sent_signals = set()
 
     while True:
         candles = get_candles()
