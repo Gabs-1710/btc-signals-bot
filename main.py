@@ -1,7 +1,6 @@
 import requests
 import time
 from datetime import datetime
-import pytz
 
 # === CONFIGURATION ===
 API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
@@ -15,18 +14,19 @@ SL = 150
 PE_TOLERANCE = 50
 MAX_HISTORY = 500
 
-last_direction = None
 sent_signals = set()
+last_direction = None
+trade_test_sent = False
 
-# === TELEGRAM ===
+# === FONCTIONS TELEGRAM ===
 def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
     except:
         pass
 
-# === PRIX EN TEMPS RÉEL ===
+# === PRIX EN DIRECT ===
 def get_live_price():
     url = f"https://api.twelvedata.com/price?symbol={SYMBOL}&apikey={API_KEY}"
     try:
@@ -50,7 +50,7 @@ def get_candles():
     except:
         return []
 
-# === SIMULATION DU FUTUR ===
+# === SIMULATION TP1 / SL ===
 def simulate_future(df, i, entry, direction):
     future = df[i+1:]
     tp1 = entry + TP1 if direction == "ACHAT" else entry - TP1
@@ -70,8 +70,8 @@ def simulate_future(df, i, entry, direction):
                 return {"type": "VENTE", "pe": entry, "tp1": tp1, "tp2": tp2, "sl": sl}
     return None
 
-# === DÉTECTION STRATÉGIES PUISSANTES ===
-def detect_strategic_signal(df, price_now):
+# === DÉTECTION LOGIQUE PUISSANTE ===
+def detect_signal(df, price_now):
     global last_direction
     for i in range(2, len(df)-10):
         c1, c2 = df[i-2], df[i-1]
@@ -92,7 +92,7 @@ def detect_strategic_signal(df, price_now):
     return None
 
 # === FORMAT MESSAGE ===
-def format_trade_msg(trade):
+def format_msg(trade):
     return (
         f"{trade['type']}\n"
         f"PE : {trade['pe']:.2f}\n"
@@ -104,8 +104,7 @@ def format_trade_msg(trade):
 
 # === MAIN LOOP ===
 def main():
-    global sent_signals
-    send_telegram("ACHAT (Trade test)\nPE : 94153.27\nTP1 : 94453.27\nTP2 : 95153.27\nSL : 94003.27")
+    global sent_signals, trade_test_sent
     last_msg = time.time()
 
     while True:
@@ -115,11 +114,19 @@ def main():
             time.sleep(60)
             continue
 
-        trade = detect_strategic_signal(candles, price)
+        if not trade_test_sent:
+            test_pe = price
+            test_tp1 = test_pe + TP1
+            test_tp2 = test_pe + TP2
+            test_sl = test_pe - SL
+            send_telegram(f"ACHAT (Trade test)\nPE : {test_pe:.2f}\nTP1 : {test_tp1:.2f}\nTP2 : {test_tp2:.2f}\nSL : {test_sl:.2f}")
+            trade_test_sent = True
+
+        trade = detect_signal(candles, price)
         if trade:
             key = f"{trade['type']}_{int(trade['pe'])}"
             if key not in sent_signals:
-                send_telegram(format_trade_msg(trade))
+                send_telegram(format_msg(trade))
                 sent_signals.add(key)
 
         if time.time() - last_msg > 7200:
