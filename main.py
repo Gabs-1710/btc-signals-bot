@@ -29,6 +29,14 @@ def get_live_price():
     except:
         return None
 
+def wait_for_live_price():
+    price = None
+    while price is None:
+        price = get_live_price()
+        if price is None:
+            time.sleep(1)
+    return price
+
 def get_candles():
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={MAX_CANDLES}"
@@ -52,7 +60,6 @@ def calculate_ema(series, period=20):
 def detect_perfect_structures(df, ema_m5, ema_m15, ema_h1, ema_d1):
     structures = []
     offset = len(df) - len(ema_m5)
-
     for i in range(50, len(df)-10):
         c = df[i]
         prev = df[i-1]
@@ -90,20 +97,13 @@ def detect_perfect_structures(df, ema_m5, ema_m15, ema_h1, ema_d1):
         ema_up = ema_m5[j] > ema_m15[j] > ema_h1[j] > ema_d1[j] if j >= 0 else False
         ema_down = ema_m5[j] < ema_m15[j] < ema_h1[j] < ema_d1[j] if j >= 0 else False
 
-        wyck_buy = (
-            df[i-4]["low"] > df[i-3]["low"] > df[i-2]["low"] and
-            c["close"] > df[i-2]["close"]
-        )
-        wyck_sell = (
-            df[i-4]["high"] < df[i-3]["high"] < df[i-2]["high"] and
-            c["close"] < df[i-2]["close"]
-        )
+        wyck_buy = df[i-4]["low"] > df[i-3]["low"] > df[i-2]["low"] and c["close"] > df[i-2]["close"]
+        wyck_sell = df[i-4]["high"] < df[i-3]["high"] < df[i-2]["high"] and c["close"] < df[i-2]["close"]
 
         if is_bull_bos and is_bull_ob and fvg_up and fib_up and compression and sfp_buy and ema_up and wyck_buy:
             structures.append({"type": "ACHAT", "index": i, "price": c["close"], "timestamp": c["datetime"]})
         if is_bear_bos and is_bear_ob and fvg_down and fib_down and compression and sfp_sell and ema_down and wyck_sell:
             structures.append({"type": "VENTE", "index": i, "price": c["close"], "timestamp": c["datetime"]})
-
     return structures
 
 def simulate_trades(df, structures):
@@ -115,45 +115,27 @@ def simulate_trades(df, structures):
         tp1 = entry + TP1 if direction == "ACHAT" else entry - TP1
         tp2 = entry + TP2 if direction == "ACHAT" else entry - TP2
         sl = entry - SL if direction == "ACHAT" else entry + SL
-
         future = df[i+1:]
         tp1_hit = False
         sl_hit = False
-
         for candle in future:
             high, low = candle["high"], candle["low"]
             if direction == "ACHAT":
-                if low <= sl:
-                    sl_hit = True
-                    break
-                if high >= tp1:
-                    tp1_hit = True
-                    break
+                if low <= sl: sl_hit = True; break
+                if high >= tp1: tp1_hit = True; break
             else:
-                if high >= sl:
-                    sl_hit = True
-                    break
-                if low <= tp1:
-                    tp1_hit = True
-                    break
-
+                if high >= sl: sl_hit = True; break
+                if low <= tp1: tp1_hit = True; break
         if tp1_hit and not sl_hit:
             validated.append({
-                "type": direction,
-                "pe": entry,
-                "tp1": tp1,
-                "tp2": tp2,
-                "sl": sl,
-                "timestamp": s["timestamp"]
+                "type": direction, "pe": entry, "tp1": tp1, "tp2": tp2, "sl": sl, "timestamp": s["timestamp"]
             })
     return validated
 
 def is_duplicate_or_conflict(trade, sent_signals, last_signal):
     key = f"{trade['type']}_{int(trade['pe'])}_{trade['timestamp']}"
-    if key in sent_signals:
-        return True
-    if last_signal and last_signal["type"] != trade["type"]:
-        return True
+    if key in sent_signals: return True
+    if last_signal and last_signal["type"] != trade["type"]: return True
     return False
 
 def update_virtual_positions(df, open_trades):
@@ -163,7 +145,6 @@ def update_virtual_positions(df, open_trades):
         tp1 = trade["tp1"]
         sl = trade["sl"]
         pe = trade["pe"]
-
         for candle in df[-10:]:
             high, low = candle["high"], candle["low"]
             if direction == "ACHAT":
@@ -193,7 +174,14 @@ def main():
     open_trades = []
     last_signal = None
     last_msg = time.time()
-    test_sent = False
+
+    # Trade test dÃ¨s le lancement avec prix garanti
+    price = wait_for_live_price()
+    tp1 = price + TP1
+    tp2 = price + TP2
+    sl = price - SL
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    send_telegram(f"ACHAT (Trade test)\nPE : {price:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]")
 
     while True:
         df = get_candles()
@@ -208,17 +196,6 @@ def main():
         ema_h1 = calculate_ema(close_prices, 60)
         ema_d1 = calculate_ema(close_prices, 100)
 
-        if not test_sent and live_price:
-            pe = live_price
-            tp1 = pe + TP1
-            tp2 = pe + TP2
-            sl = pe - SL
-            send_telegram(
-                f"ACHAT (Trade test)\nPE : {pe:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n"
-                f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]"
-            )
-            test_sent = True
-
         update_virtual_positions(df, open_trades)
 
         structures = detect_perfect_structures(df, ema_m5, ema_m15, ema_h1, ema_d1)
@@ -229,12 +206,8 @@ def main():
                 continue
             if abs(trade["pe"] - live_price) <= PE_TOLERANCE:
                 msg = (
-                    f"{trade['type']}\n"
-                    f"PE : {trade['pe']:.2f}\n"
-                    f"TP1 : {trade['tp1']:.2f}\n"
-                    f"TP2 : {trade['tp2']:.2f}\n"
-                    f"SL : {trade['sl']:.2f}\n"
-                    f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]"
+                    f"{trade['type']}\nPE : {trade['pe']:.2f}\nTP1 : {trade['tp1']:.2f}\n"
+                    f"TP2 : {trade['tp2']:.2f}\nSL : {trade['sl']:.2f}\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]"
                 )
                 send_telegram(msg)
                 key = f"{trade['type']}_{int(trade['pe'])}_{trade['timestamp']}"
