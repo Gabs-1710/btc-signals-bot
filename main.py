@@ -26,7 +26,7 @@ def send_telegram(msg):
     except:
         pass
 
-# === PRIX EN TEMPS RÉEL ===
+# === PRIX TEMPS RÉEL ===
 def get_live_price():
     url = f"https://api.twelvedata.com/price?symbol={SYMBOL}&apikey={API_KEY}"
     try:
@@ -35,7 +35,7 @@ def get_live_price():
     except:
         return None
 
-# === RÉCUPÉRATION DES BOUGIES ===
+# === BOUGIES M5 ===
 def get_candles():
     url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={MAX_HISTORY}&apikey={API_KEY}"
     try:
@@ -50,7 +50,7 @@ def get_candles():
     except:
         return []
 
-# === SIMULATION DU TRADE ===
+# === SIMULATION TP1 / SL ===
 def simulate_future(df, i, entry, direction):
     future = df[i+1:]
     tp1 = entry + TP1 if direction == "ACHAT" else entry - TP1
@@ -70,12 +70,11 @@ def simulate_future(df, i, entry, direction):
                 return {"type": "VENTE", "pe": entry, "tp1": tp1, "tp2": tp2, "sl": sl}
     return None
 
-# === STRATÉGIES COMBINÉES ===
+# === DÉTECTION STRATÉGIQUE (simplifiée ici) ===
 def detect_strategic_signal(df, price_now):
     global last_direction
     for i in range(2, len(df)-10):
         c1, c2 = df[i-2], df[i-1]
-        # Exemple de confluence haussière (CHoCH + OB + FVG + EMA + Fibonacci simulé)
         if c1["close"] < c1["open"] and c2["close"] > c2["open"] and c2["close"] > c1["high"]:
             entry = c2["close"]
             if abs(price_now - entry) <= PE_TOLERANCE and last_direction != "VENTE":
@@ -83,7 +82,6 @@ def detect_strategic_signal(df, price_now):
                 if sim and abs(price_now - sim["pe"]) <= PE_TOLERANCE:
                     last_direction = "ACHAT"
                     return sim
-        # Exemple de confluence baissière
         if c1["close"] > c1["open"] and c2["close"] < c2["open"] and c2["close"] < c1["low"]:
             entry = c2["close"]
             if abs(price_now - entry) <= PE_TOLERANCE and last_direction != "ACHAT":
@@ -93,7 +91,7 @@ def detect_strategic_signal(df, price_now):
                     return sim
     return None
 
-# === FORMAT MESSAGE ===
+# === MESSAGE FINAL ===
 def format_trade_msg(trade):
     return (
         f"{trade['type']}\n"
@@ -104,7 +102,7 @@ def format_trade_msg(trade):
         f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]"
     )
 
-# === MOTEUR PRINCIPAL ===
+# === BOUCLE PRINCIPALE ===
 def main():
     global trade_test_sent, sent_signals
     last_msg = time.time()
