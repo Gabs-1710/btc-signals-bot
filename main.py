@@ -7,13 +7,14 @@ import numpy as np
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
 TWELVEDATA_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
+COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
 SYMBOL = "BTC/USD"
 TP1 = 300
 TP2 = 1000
 SL = 150
 PE_TOLERANCE = 50
 MAX_CANDLES = 500
-MAX_RETRIES = 5
+MAX_RETRIES = 3
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -29,11 +30,23 @@ def send_telegram(msg):
             time.sleep(2)
 
 def get_live_price():
+    # Try TwelveData
     try:
         url = f"https://api.twelvedata.com/quote?symbol={SYMBOL}&apikey={TWELVEDATA_API_KEY}"
         res = requests.get(url, timeout=10).json()
-        return float(res["price"])
+        price = float(res["price"])
+        print(f"TwelveData price: {price}")
+        return price
     except:
+        print("TwelveData failed, trying CoinGecko...")
+    # Try CoinGecko
+    try:
+        res = requests.get(COINGECKO_URL, timeout=10).json()
+        price = float(res["bitcoin"]["usd"])
+        print(f"CoinGecko price: {price}")
+        return price
+    except:
+        print("CoinGecko failed.")
         return None
 
 def get_candles(interval):
@@ -59,7 +72,6 @@ def get_stable_price():
     attempts = 0
     while price is None and attempts < MAX_RETRIES:
         price = get_live_price()
-        print(f"Essai {attempts +1}/{MAX_RETRIES} → prix récupéré = {price}")
         if price is None:
             time.sleep(2)
         attempts +=1
@@ -69,7 +81,7 @@ def main():
     sent_signals = set()
     last_msg = time.time()
 
-    # Trade test au démarrage
+    # Trade test at startup
     price = get_stable_price()
     if price:
         tp1 = price + TP1
@@ -77,11 +89,11 @@ def main():
         sl = price - SL
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
         send_telegram(f"ACHAT (Trade test)\nPE : {price:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]")
-        print(f"Trade test envoyé, prix = {price}")
+        print(f"Trade test sent, price = {price}")
     else:
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-        send_telegram(f"Erreur TwelveData API, prix non disponible\n[{now}]")
-        print("Erreur TwelveData API → prix non récupéré, moteur bloqué")
+        send_telegram(f"Erreur API : prix non disponible après {MAX_RETRIES} tentatives\n[{now}]")
+        print("API error → no price, engine paused")
         return
 
     time.sleep(10)
