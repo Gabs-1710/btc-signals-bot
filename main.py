@@ -6,8 +6,8 @@ import numpy as np
 # === CONFIG ===
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
-SYMBOL = "BTCUSDT"
-INTERVAL = "5m"
+TWELVEDATA_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
+SYMBOL = "BTC/USD"
 TP1 = 300
 TP2 = 1000
 SL = 150
@@ -15,17 +15,17 @@ PE_TOLERANCE = 50
 MAX_CANDLES = 500
 
 def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
     except:
         pass
 
 def get_live_price():
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
-        res = requests.get(url, timeout=10)
-        return float(res.json()["price"])
+        url = f"https://api.twelvedata.com/quote?symbol={SYMBOL}&apikey={TWELVEDATA_API_KEY}"
+        res = requests.get(url, timeout=10).json()
+        return float(res["price"])
     except:
         return None
 
@@ -37,18 +37,19 @@ def wait_for_live_price():
             time.sleep(1)
     return price
 
-def get_candles():
+def get_candles(interval):
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={MAX_CANDLES}"
+        url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={interval}&outputsize={MAX_CANDLES}&apikey={TWELVEDATA_API_KEY}"
         res = requests.get(url, timeout=10).json()
+        values = res["values"]
         candles = []
-        for c in res:
+        for v in reversed(values):
             candles.append({
-                "datetime": datetime.utcfromtimestamp(c[0] / 1000).strftime('%Y-%m-%d %H:%M:%S'),
-                "open": float(c[1]),
-                "high": float(c[2]),
-                "low": float(c[3]),
-                "close": float(c[4])
+                "datetime": v["datetime"],
+                "open": float(v["open"]),
+                "high": float(v["high"]),
+                "low": float(v["low"]),
+                "close": float(v["close"])
             })
         return candles
     except:
@@ -57,170 +58,60 @@ def get_candles():
 def calculate_ema(series, period=20):
     return np.convolve(series, np.ones(period)/period, mode='valid')
 
-def detect_perfect_structures(df, ema_m5, ema_m15, ema_h1, ema_d1):
-    structures = []
-    offset = len(df) - len(ema_m5)
-    for i in range(50, len(df)-10):
-        c = df[i]
-        prev = df[i-1]
-        pre = df[i-2]
-
-        is_bull_bos = pre["high"] < prev["high"] < c["high"] and prev["close"] > pre["high"]
-        is_bear_bos = pre["low"] > prev["low"] > c["low"] and prev["close"] < pre["low"]
-
-        is_bull_ob = c["open"] < c["close"] and df[i+1]["high"] > c["high"]
-        is_bear_ob = c["open"] > c["close"] and df[i+1]["low"] < c["low"]
-
-        fvg_up = df[i-1]["low"] > c["high"]
-        fvg_down = df[i-1]["high"] < c["low"]
-
-        fib_up = fib_down = False
-        if i >= 3:
-            swing_low = min(df[i-3]["low"], df[i-2]["low"])
-            swing_high = max(df[i-3]["high"], df[i-2]["high"])
-            range_ = swing_high - swing_low + 1e-6
-            retrace_up = (c["close"] - swing_low) / range_
-            retrace_down = (swing_high - c["close"]) / range_
-            fib_up = 0.618 <= retrace_up <= 0.786
-            fib_down = 0.618 <= retrace_down <= 0.786
-
-        compression = (
-            abs(df[i-2]["high"] - df[i-2]["low"]) >
-            abs(df[i-1]["high"] - df[i-1]["low"]) >
-            abs(c["high"] - c["low"])
-        )
-
-        sfp_buy = c["low"] < df[i-1]["low"] and c["close"] > c["open"]
-        sfp_sell = c["high"] > df[i-1]["high"] and c["close"] < c["open"]
-
-        j = i - offset if i - offset < len(ema_m5) else -1
-        ema_up = ema_m5[j] > ema_m15[j] > ema_h1[j] > ema_d1[j] if j >= 0 else False
-        ema_down = ema_m5[j] < ema_m15[j] < ema_h1[j] < ema_d1[j] if j >= 0 else False
-
-        wyck_buy = df[i-4]["low"] > df[i-3]["low"] > df[i-2]["low"] and c["close"] > df[i-2]["close"]
-        wyck_sell = df[i-4]["high"] < df[i-3]["high"] < df[i-2]["high"] and c["close"] < df[i-2]["close"]
-
-        if is_bull_bos and is_bull_ob and fvg_up and fib_up and compression and sfp_buy and ema_up and wyck_buy:
-            structures.append({"type": "ACHAT", "index": i, "price": c["close"], "timestamp": c["datetime"]})
-        if is_bear_bos and is_bear_ob and fvg_down and fib_down and compression and sfp_sell and ema_down and wyck_sell:
-            structures.append({"type": "VENTE", "index": i, "price": c["close"], "timestamp": c["datetime"]})
-    return structures
-
-def simulate_trades(df, structures):
-    validated = []
-    for s in structures:
-        i = s["index"]
-        direction = s["type"]
-        entry = s["price"]
-        tp1 = entry + TP1 if direction == "ACHAT" else entry - TP1
-        tp2 = entry + TP2 if direction == "ACHAT" else entry - TP2
-        sl = entry - SL if direction == "ACHAT" else entry + SL
-        future = df[i+1:]
-        tp1_hit = False
-        sl_hit = False
-        for candle in future:
-            high, low = candle["high"], candle["low"]
-            if direction == "ACHAT":
-                if low <= sl: sl_hit = True; break
-                if high >= tp1: tp1_hit = True; break
-            else:
-                if high >= sl: sl_hit = True; break
-                if low <= tp1: tp1_hit = True; break
-        if tp1_hit and not sl_hit:
-            validated.append({
-                "type": direction, "pe": entry, "tp1": tp1, "tp2": tp2, "sl": sl, "timestamp": s["timestamp"]
-            })
-    return validated
-
-def is_duplicate_or_conflict(trade, sent_signals, last_signal):
-    key = f"{trade['type']}_{int(trade['pe'])}_{trade['timestamp']}"
-    if key in sent_signals: return True
-    if last_signal and last_signal["type"] != trade["type"]: return True
-    return False
-
-def update_virtual_positions(df, open_trades):
-    closed = []
-    for trade in open_trades:
-        direction = trade["type"]
-        tp1 = trade["tp1"]
-        sl = trade["sl"]
-        pe = trade["pe"]
-        for candle in df[-10:]:
-            high, low = candle["high"], candle["low"]
-            if direction == "ACHAT":
-                if low <= sl:
-                    send_telegram(f"❌ SL touché (ACHAT)\\nEntrée : {pe:.2f}\\nSL : {sl:.2f}")
-                    closed.append(trade)
-                    break
-                if high >= tp1:
-                    send_telegram(f"✅ TP1 atteint (ACHAT)\\nEntrée : {pe:.2f}\\nTP1 : {tp1:.2f}")
-                    closed.append(trade)
-                    break
-            else:
-                if high >= sl:
-                    send_telegram(f"❌ SL touché (VENTE)\\nEntrée : {pe:.2f}\\nSL : {sl:.2f}")
-                    closed.append(trade)
-                    break
-                if low <= tp1:
-                    send_telegram(f"✅ TP1 atteint (VENTE)\\nEntrée : {pe:.2f}\\nTP1 : {tp1:.2f}")
-                    closed.append(trade)
-                    break
-    for trade in closed:
-        if trade in open_trades:
-            open_trades.remove(trade)
-
 def main():
     sent_signals = set()
-    open_trades = []
-    last_signal = None
     last_msg = time.time()
 
-    # Trade test dès le lancement
+    # Trade test au démarrage
     price = wait_for_live_price()
     tp1 = price + TP1
     tp2 = price + TP2
     sl = price - SL
     now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    send_telegram(f"ACHAT (Trade test)\\nPE : {price:.2f}\\nTP1 : {tp1:.2f}\\nTP2 : {tp2:.2f}\\nSL : {sl:.2f}\\n[{now}]")
-    time.sleep(5)  # Pause pour garantir l’envoi
+    send_telegram(f"ACHAT (Trade test)\nPE : {price:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]")
+    time.sleep(5)
 
     while True:
-        df = get_candles()
-        live_price = get_live_price()
-        if not df or live_price is None:
+        m1 = get_candles("1min")
+        m5 = get_candles("5min")
+        m15 = get_candles("15min")
+        price = get_live_price()
+        if not m1 or not m5 or not m15 or price is None:
             time.sleep(60)
             continue
 
-        close_prices = [x["close"] for x in df]
-        ema_m5 = calculate_ema(close_prices, 20)
-        ema_m15 = calculate_ema(close_prices, 40)
-        ema_h1 = calculate_ema(close_prices, 60)
-        ema_d1 = calculate_ema(close_prices, 100)
+        # Analyse simple multi-timeframe (exemple : tendance alignée)
+        m1_trend = m1[-1]["close"] > m1[-2]["close"]
+        m5_trend = m5[-1]["close"] > m5[-2]["close"]
+        m15_trend = m15[-1]["close"] > m15[-2]["close"]
 
-        update_virtual_positions(df, open_trades)
+        if m1_trend and m5_trend and m15_trend:
+            direction = "ACHAT"
+        elif not m1_trend and not m5_trend and not m15_trend:
+            direction = "VENTE"
+        else:
+            direction = None
 
-        structures = detect_perfect_structures(df, ema_m5, ema_m15, ema_h1, ema_d1)
-        validated_trades = simulate_trades(df, structures)
+        if direction:
+            pe = price
+            tp1 = pe + TP1 if direction == "ACHAT" else pe - TP1
+            tp2 = pe + TP2 if direction == "ACHAT" else pe - TP2
+            sl = pe - SL if direction == "ACHAT" else pe + SL
 
-        for trade in validated_trades:
-            if is_duplicate_or_conflict(trade, sent_signals, last_signal):
-                continue
-            if abs(trade["pe"] - live_price) <= PE_TOLERANCE:
-                msg = (
-                    f"{trade['type']}\\nPE : {trade['pe']:.2f}\\nTP1 : {trade['tp1']:.2f}\\n"
-                    f"TP2 : {trade['tp2']:.2f}\\nSL : {trade['sl']:.2f}\\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]"
-                )
-                send_telegram(msg)
-                key = f"{trade['type']}_{int(trade['pe'])}_{trade['timestamp']}"
-                sent_signals.add(key)
-                last_signal = trade
-                open_trades.append(trade)
+            if abs(pe - price) <= PE_TOLERANCE:
+                now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+                msg = f"{direction}\nPE : {pe:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]"
+                key = f"{direction}_{int(pe)}"
+                if key not in sent_signals:
+                    send_telegram(msg)
+                    sent_signals.add(key)
 
         if time.time() - last_msg > 7200:
-            send_telegram(f"Aucun signal parfait détecté pour le moment.\\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]")
+            now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+            send_telegram(f"Aucun signal parfait détecté pour le moment.\n[{now}]")
             last_msg = time.time()
 
-        time.sleep(300)
+        time.sleep(60)
 
 if __name__ == "__main__":
     main()
