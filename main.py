@@ -16,10 +16,16 @@ MAX_CANDLES = 500
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-    except:
-        pass
+    success = False
+    while not success:
+        try:
+            response = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+            if response.status_code == 200:
+                success = True
+            else:
+                time.sleep(2)
+        except:
+            time.sleep(2)
 
 def get_live_price():
     try:
@@ -62,14 +68,15 @@ def main():
     sent_signals = set()
     last_msg = time.time()
 
-    # Trade test au démarrage
+    # Trade test au démarrage avec boucle sécurisée
     price = wait_for_live_price()
     tp1 = price + TP1
     tp2 = price + TP2
     sl = price - SL
     now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
     send_telegram(f"ACHAT (Trade test)\nPE : {price:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]")
-    time.sleep(5)
+    print("Trade test envoyé")
+    time.sleep(10)
 
     while True:
         m1 = get_candles("1min")
@@ -80,7 +87,6 @@ def main():
             time.sleep(60)
             continue
 
-        # Analyse simple multi-timeframe (exemple : tendance alignée)
         m1_trend = m1[-1]["close"] > m1[-2]["close"]
         m5_trend = m5[-1]["close"] > m5[-2]["close"]
         m15_trend = m15[-1]["close"] > m15[-2]["close"]
