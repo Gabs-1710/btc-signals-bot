@@ -53,40 +53,39 @@ def get_candles(interval):
     except:
         return []
 
-def wait_for_live_price_with_fallback():
-    attempts = 0
-    price = None
-    timeout_start = time.time()
-    while price is None and (time.time() - timeout_start) < 30:
-        price = get_live_price()
-        print(f"Tentative d’envoi du Trade test : prix = {price}")
-        if price is None:
-            attempts += 1
-            time.sleep(2)
-        if attempts >= 5:
-            m1 = get_candles("1min")
-            if m1:
-                price = m1[-1]["close"]
-                print(f"Fallback prix M1 utilisé : {price}")
-            break
+def get_fallback_price():
+    m1 = get_candles("1min")
+    if m1:
+        return m1[-1]["close"]
+    else:
+        return None
+
+def get_stable_price():
+    price = get_live_price()
+    if price is None:
+        print("Primary price failed, trying fallback on M1...")
+        price = get_fallback_price()
     return price
 
 def main():
     sent_signals = set()
     last_msg = time.time()
 
-    # Trade test au démarrage avec fallback et logs
-    price = wait_for_live_price_with_fallback()
+    # Trade test au démarrage
+    price = get_stable_price()
     if price:
         tp1 = price + TP1
         tp2 = price + TP2
         sl = price - SL
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
         send_telegram(f"ACHAT (Trade test)\nPE : {price:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]")
-        print("Trade test envoyé")
-        time.sleep(10)
+        print(f"Trade test envoyé, prix = {price}")
     else:
-        print("Échec : prix introuvable pour le Trade test")
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+        send_telegram(f"ACHAT (Trade test - prix manquant)\nPE : inconnu\nTP1 : inconnu\nTP2 : inconnu\nSL : inconnu\n[{now}]")
+        print("Trade test forcé envoyé (prix manquant)")
+
+    time.sleep(10)
 
     while True:
         m1 = get_candles("1min")
