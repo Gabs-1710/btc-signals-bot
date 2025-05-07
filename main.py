@@ -35,14 +35,6 @@ def get_live_price():
     except:
         return None
 
-def wait_for_live_price():
-    price = None
-    while price is None:
-        price = get_live_price()
-        if price is None:
-            time.sleep(1)
-    return price
-
 def get_candles(interval):
     try:
         url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={interval}&outputsize={MAX_CANDLES}&apikey={TWELVEDATA_API_KEY}"
@@ -61,22 +53,40 @@ def get_candles(interval):
     except:
         return []
 
-def calculate_ema(series, period=20):
-    return np.convolve(series, np.ones(period)/period, mode='valid')
+def wait_for_live_price_with_fallback():
+    attempts = 0
+    price = None
+    timeout_start = time.time()
+    while price is None and (time.time() - timeout_start) < 30:
+        price = get_live_price()
+        print(f"Tentative d’envoi du Trade test : prix = {price}")
+        if price is None:
+            attempts += 1
+            time.sleep(2)
+        if attempts >= 5:
+            m1 = get_candles("1min")
+            if m1:
+                price = m1[-1]["close"]
+                print(f"Fallback prix M1 utilisé : {price}")
+            break
+    return price
 
 def main():
     sent_signals = set()
     last_msg = time.time()
 
-    # Trade test au démarrage avec boucle sécurisée
-    price = wait_for_live_price()
-    tp1 = price + TP1
-    tp2 = price + TP2
-    sl = price - SL
-    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    send_telegram(f"ACHAT (Trade test)\nPE : {price:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]")
-    print("Trade test envoyé")
-    time.sleep(10)
+    # Trade test au démarrage avec fallback et logs
+    price = wait_for_live_price_with_fallback()
+    if price:
+        tp1 = price + TP1
+        tp2 = price + TP2
+        sl = price - SL
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+        send_telegram(f"ACHAT (Trade test)\nPE : {price:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]")
+        print("Trade test envoyé")
+        time.sleep(10)
+    else:
+        print("Échec : prix introuvable pour le Trade test")
 
     while True:
         m1 = get_candles("1min")
