@@ -149,20 +149,20 @@ def update_virtual_positions(df, open_trades):
             high, low = candle["high"], candle["low"]
             if direction == "ACHAT":
                 if low <= sl:
-                    send_telegram(f"â SL touchÃ© (ACHAT)\nEntrÃ©e : {pe:.2f}\nSL : {sl:.2f}")
+                    send_telegram(f"❌ SL touché (ACHAT)\\nEntrée : {pe:.2f}\\nSL : {sl:.2f}")
                     closed.append(trade)
                     break
                 if high >= tp1:
-                    send_telegram(f"â TP1 atteint (ACHAT)\nEntrÃ©e : {pe:.2f}\nTP1 : {tp1:.2f}")
+                    send_telegram(f"✅ TP1 atteint (ACHAT)\\nEntrée : {pe:.2f}\\nTP1 : {tp1:.2f}")
                     closed.append(trade)
                     break
             else:
                 if high >= sl:
-                    send_telegram(f"â SL touchÃ© (VENTE)\nEntrÃ©e : {pe:.2f}\nSL : {sl:.2f}")
+                    send_telegram(f"❌ SL touché (VENTE)\\nEntrée : {pe:.2f}\\nSL : {sl:.2f}")
                     closed.append(trade)
                     break
                 if low <= tp1:
-                    send_telegram(f"â TP1 atteint (VENTE)\nEntrÃ©e : {pe:.2f}\nTP1 : {tp1:.2f}")
+                    send_telegram(f"✅ TP1 atteint (VENTE)\\nEntrée : {pe:.2f}\\nTP1 : {tp1:.2f}")
                     closed.append(trade)
                     break
     for trade in closed:
@@ -175,13 +175,14 @@ def main():
     last_signal = None
     last_msg = time.time()
 
-    # Trade test dÃ¨s le lancement avec prix garanti
+    # Trade test dès le lancement
     price = wait_for_live_price()
     tp1 = price + TP1
     tp2 = price + TP2
     sl = price - SL
     now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    send_telegram(f"ACHAT (Trade test)\nPE : {price:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]")
+    send_telegram(f"ACHAT (Trade test)\\nPE : {price:.2f}\\nTP1 : {tp1:.2f}\\nTP2 : {tp2:.2f}\\nSL : {sl:.2f}\\n[{now}]")
+    time.sleep(5)  # Pause pour garantir l’envoi
 
     while True:
         df = get_candles()
@@ -206,8 +207,8 @@ def main():
                 continue
             if abs(trade["pe"] - live_price) <= PE_TOLERANCE:
                 msg = (
-                    f"{trade['type']}\nPE : {trade['pe']:.2f}\nTP1 : {trade['tp1']:.2f}\n"
-                    f"TP2 : {trade['tp2']:.2f}\nSL : {trade['sl']:.2f}\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]"
+                    f"{trade['type']}\\nPE : {trade['pe']:.2f}\\nTP1 : {trade['tp1']:.2f}\\n"
+                    f"TP2 : {trade['tp2']:.2f}\\nSL : {trade['sl']:.2f}\\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]"
                 )
                 send_telegram(msg)
                 key = f"{trade['type']}_{int(trade['pe'])}_{trade['timestamp']}"
@@ -216,7 +217,7 @@ def main():
                 open_trades.append(trade)
 
         if time.time() - last_msg > 7200:
-            send_telegram(f"Aucun signal parfait dÃ©tectÃ© pour le moment.\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]")
+            send_telegram(f"Aucun signal parfait détecté pour le moment.\\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}]")
             last_msg = time.time()
 
         time.sleep(300)
