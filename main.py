@@ -13,6 +13,7 @@ TP2 = 1000
 SL = 150
 PE_TOLERANCE = 50
 MAX_CANDLES = 500
+MAX_RETRIES = 5
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -53,18 +54,15 @@ def get_candles(interval):
     except:
         return []
 
-def get_fallback_price():
-    m1 = get_candles("1min")
-    if m1:
-        return m1[-1]["close"]
-    else:
-        return None
-
 def get_stable_price():
-    price = get_live_price()
-    if price is None:
-        print("Primary price failed, trying fallback on M1...")
-        price = get_fallback_price()
+    price = None
+    attempts = 0
+    while price is None and attempts < MAX_RETRIES:
+        price = get_live_price()
+        print(f"Essai {attempts +1}/{MAX_RETRIES} → prix récupéré = {price}")
+        if price is None:
+            time.sleep(2)
+        attempts +=1
     return price
 
 def main():
@@ -82,8 +80,9 @@ def main():
         print(f"Trade test envoyé, prix = {price}")
     else:
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-        send_telegram(f"ACHAT (Trade test - prix manquant)\nPE : inconnu\nTP1 : inconnu\nTP2 : inconnu\nSL : inconnu\n[{now}]")
-        print("Trade test forcé envoyé (prix manquant)")
+        send_telegram(f"Erreur TwelveData API, prix non disponible\n[{now}]")
+        print("Erreur TwelveData API → prix non récupéré, moteur bloqué")
+        return
 
     time.sleep(10)
 
