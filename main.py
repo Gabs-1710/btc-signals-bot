@@ -4,7 +4,7 @@ import time
 import telebot
 import ta
 
-# CONFIGURATION PERSONNALISÉE
+# CONFIGURATION
 API_KEY = 'd7ddc825488f4b078fba7af6d01c32c5'
 TELEGRAM_TOKEN = '7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU'
 CHAT_ID = '2128959111'
@@ -23,13 +23,32 @@ def get_live_data():
     df = df.iloc[::-1]
     return df
 
+def detect_order_block(df):
+    return df['close'].iloc[-2] < df['open'].iloc[-2] and df['close'].iloc[-1] > df['open'].iloc[-1]
+
+def detect_fvg(df):
+    prev_low = df['low'].iloc[-2]
+    curr_high = df['high'].iloc[-1]
+    return curr_high - prev_low > (df['high'].max() - df['low'].min()) * 0.01
+
+def detect_choch_bos(df):
+    return df['high'].iloc[-1] > df['high'].iloc[-2] and df['low'].iloc[-1] > df['low'].iloc[-2]
+
 def apply_strategies(df):
     df['ema'] = df['close'].ewm(span=10, adjust=False).mean()
     df['rsi'] = ta.momentum.rsi(df['close'], window=14)
     signals = []
-    if df['close'].iloc[-1] > df['ema'].iloc[-1] and df['rsi'].iloc[-1] < 70:
+    if (df['close'].iloc[-1] > df['ema'].iloc[-1] and 
+        df['rsi'].iloc[-1] < 70 and 
+        detect_order_block(df) and 
+        detect_fvg(df) and 
+        detect_choch_bos(df)):
         signals.append('BUY')
-    if df['close'].iloc[-1] < df['ema'].iloc[-1] and df['rsi'].iloc[-1] > 30:
+    if (df['close'].iloc[-1] < df['ema'].iloc[-1] and 
+        df['rsi'].iloc[-1] > 30 and 
+        detect_order_block(df) and 
+        detect_fvg(df) and 
+        detect_choch_bos(df)):
         signals.append('SELL')
     return signals
 
@@ -45,10 +64,12 @@ def send_telegram(message):
     bot.send_message(CHAT_ID, message)
 
 def main():
+    # Trade test au démarrage (une seule fois)
     price_data = get_live_data()
     if price_data is not None:
         price = price_data['close'].iloc[-1]
         send_telegram(f"Trade test (moteur prêt)\nPE : {price}\nTP1 : {price + 300}\nTP2 : {price + 1000}\nSL : {price - 150}")
+
     while True:
         df = get_live_data()
         if df is None:
