@@ -1,77 +1,72 @@
 import requests
+import pandas as pd
 import time
 import telebot
+import ta
 
-# CONFIG PERSONNALISÉE
+# CONFIGURATION PERSONNALISÉE
 API_KEY = 'd7ddc825488f4b078fba7af6d01c32c5'
-SYMBOL = 'BTC/USD'
-TIMEFRAME = '1min'
-BOT_TOKEN = '7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU'
+TELEGRAM_TOKEN = '7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU'
 CHAT_ID = '2128959111'
-CHECK_INTERVAL = 60  # seconds
+SYMBOL = 'BTC/USD'
+INTERVAL = '1min'
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-bot = telebot.TeleBot(BOT_TOKEN)
+def get_live_data():
+    url = f'https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&apikey={API_KEY}&outputsize=500'
+    r = requests.get(url)
+    data = r.json()
+    if 'values' not in data:
+        return None
+    df = pd.DataFrame(data['values'])
+    df['close'] = pd.to_numeric(df['close'])
+    df = df.iloc[::-1]
+    return df
 
-def get_live_price():
-    url = f'https://api.twelvedata.com/price?symbol={SYMBOL}&apikey={API_KEY}'
-    response = requests.get(url)
-    data = response.json()
-    if 'price' in data:
-        return float(data['price'])
-    return None
+def apply_strategies(df):
+    df['ema'] = df['close'].ewm(span=10, adjust=False).mean()
+    df['rsi'] = ta.momentum.rsi(df['close'], window=14)
+    signals = []
+    if df['close'].iloc[-1] > df['ema'].iloc[-1] and df['rsi'].iloc[-1] < 70:
+        signals.append('BUY')
+    if df['close'].iloc[-1] < df['ema'].iloc[-1] and df['rsi'].iloc[-1] > 30:
+        signals.append('SELL')
+    return signals
 
-def analyze_signal(price_history):
-    last = price_history[-1]
-    ema = sum(price_history[-10:]) / 10
-    trend_up = last > ema
-    fibo_support = min(price_history[-50:]) * 1.05
-    fibo_resistance = max(price_history[-50:]) * 0.95
-    if trend_up and last > fibo_resistance:
-        return 'ACHAT'
-    if not trend_up and last < fibo_support:
-        return 'VENTE'
-    return None
-
-def backtest(price_history, direction):
-    TP1 = 300 * 0.01
-    SL = 150 * 0.01
-    entry = price_history[-1]
-    tp1_price = entry + TP1 if direction == 'ACHAT' else entry - TP1
-    sl_price = entry - SL if direction == 'ACHAT' else entry + SL
-    for future in price_history[-500:]:
-        if direction == 'ACHAT' and future <= sl_price:
+def simulate_trade(entry, tp1, sl, df):
+    for price in df['close']:
+        if price <= sl:
             return False
-        if direction == 'VENTE' and future >= sl_price:
-            return False
-        if direction == 'ACHAT' and future >= tp1_price:
-            return True
-        if direction == 'VENTE' and future <= tp1_price:
+        if price >= tp1:
             return True
     return False
 
-def send_signal(signal, price):
-    TP1 = price + 300 * 0.01 if signal == 'ACHAT' else price - 300 * 0.01
-    TP2 = price + 1000 * 0.01 if signal == 'ACHAT' else price - 1000 * 0.01
-    SL = price - 150 * 0.01 if signal == 'ACHAT' else price + 150 * 0.01
-    msg = f"{signal}\nPE : {round(price,2)}\nTP1 : {round(TP1,2)}\nTP2 : {round(TP2,2)}\nSL : {round(SL,2)}"
-    bot.send_message(CHAT_ID, msg)
+def send_telegram(message):
+    bot.send_message(CHAT_ID, message)
 
 def main():
-    price_history = []
+    price_data = get_live_data()
+    if price_data is not None:
+        price = price_data['close'].iloc[-1]
+        send_telegram(f"Trade test (moteur prêt)\nPE : {price}\nTP1 : {price + 300}\nTP2 : {price + 1000}\nSL : {price - 150}")
     while True:
-        price = get_live_price()
-        if price:
-            price_history.append(price)
-            if len(price_history) > 500:
-                signal = analyze_signal(price_history)
-                if signal and backtest(price_history, signal):
-                    send_signal(signal, price)
-                price_history.pop(0)
-            else:
-                bot.send_message(CHAT_ID, f"Trade test (moteur prêt)\nPE : {price}\nTP1 : {round(price + 300 * 0.01,2)}\nTP2 : {round(price + 1000 *0.01,2)}\nSL : {round(price -150 *0.01,2)}")
-        else:
-            bot.send_message(CHAT_ID, "Erreur API : prix non disponible")
-        time.sleep(CHECK_INTERVAL)
+        df = get_live_data()
+        if df is None:
+            send_telegram("Erreur API : prix non disponible")
+            time.sleep(120)
+            continue
 
-if __name__ == '__main__':
+        signals = apply_strategies(df)
+        for signal in signals:
+            price = df['close'].iloc[-1]
+            pe = price
+            tp1 = pe + 300 if signal == 'BUY' else pe - 300
+            sl = pe - 150 if signal == 'BUY' else pe + 150
+
+            if simulate_trade(pe, tp1, sl, df):
+                message = f"{'ACHAT' if signal == 'BUY' else 'VENTE'}\nPE : {round(pe, 2)}\nTP1 : {round(tp1, 2)}\nTP2 : {round(tp1 + 700 if signal == 'BUY' else tp1 - 700, 2)}\nSL : {round(sl, 2)}"
+                send_telegram(message)
+        time.sleep(60)
+
+if __name__ == "__main__":
     main()
