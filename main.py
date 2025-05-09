@@ -1,130 +1,77 @@
 import requests
 import time
-from datetime import datetime
-import numpy as np
+import telebot
 
-# === CONFIG ===
-TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
-TELEGRAM_CHAT_ID = "2128959111"
-TWELVEDATA_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
-COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-SYMBOL = "BTC/USD"
-TP1 = 300
-TP2 = 1000
-SL = 150
-PE_TOLERANCE = 50
-MAX_CANDLES = 500
-MAX_RETRIES = 3
+# CONFIG PERSONNALISÉE
+API_KEY = 'd7ddc825488f4b078fba7af6d01c32c5'
+SYMBOL = 'BTC/USD'
+TIMEFRAME = '1min'
+BOT_TOKEN = '7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU'
+CHAT_ID = '2128959111'
+CHECK_INTERVAL = 60  # seconds
 
-strategy_stats = {"EMA+OB": [0, 0], "RSI": [0, 0], "FVG": [0, 0]}
-
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
-    except:
-        pass
+bot = telebot.TeleBot(BOT_TOKEN)
 
 def get_live_price():
-    try:
-        url = f"https://api.twelvedata.com/quote?symbol={SYMBOL}&apikey={TWELVEDATA_API_KEY}"
-        res = requests.get(url, timeout=10).json()
-        return float(res["price"])
-    except:
-        try:
-            res = requests.get(COINGECKO_URL, timeout=10).json()
-            return float(res["bitcoin"]["usd"])
-        except:
-            return None
+    url = f'https://api.twelvedata.com/price?symbol={SYMBOL}&apikey={API_KEY}'
+    response = requests.get(url)
+    data = response.json()
+    if 'price' in data:
+        return float(data['price'])
+    return None
 
-def get_candles(interval):
-    try:
-        url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={interval}&outputsize={MAX_CANDLES}&apikey={TWELVEDATA_API_KEY}"
-        res = requests.get(url, timeout=10).json()
-        return [{"datetime": v["datetime"], "open": float(v["open"]),
-                 "high": float(v["high"]), "low": float(v["low"]), "close": float(v["close"])} 
-                for v in reversed(res["values"])]
-    except:
-        return []
+def analyze_signal(price_history):
+    last = price_history[-1]
+    ema = sum(price_history[-10:]) / 10
+    trend_up = last > ema
+    fibo_support = min(price_history[-50:]) * 1.05
+    fibo_resistance = max(price_history[-50:]) * 0.95
+    if trend_up and last > fibo_resistance:
+        return 'ACHAT'
+    if not trend_up and last < fibo_support:
+        return 'VENTE'
+    return None
 
-def evaluate_strategy(candles, strategy):
-    wins, total = 0, 0
-    for i in range(2, len(candles)):
-        if strategy == "EMA+OB":
-            signal = candles[i]["close"] > candles[i-1]["close"] > candles[i-2]["close"]
-        elif strategy == "RSI":
-            signal = np.mean([c["close"] for c in candles[i-14:i]]) < candles[i]["close"]
-        elif strategy == "FVG":
-            signal = abs(candles[i]["close"] - candles[i]["open"]) > 0.5
-        else:
-            signal = False
+def backtest(price_history, direction):
+    TP1 = 300 * 0.01
+    SL = 150 * 0.01
+    entry = price_history[-1]
+    tp1_price = entry + TP1 if direction == 'ACHAT' else entry - TP1
+    sl_price = entry - SL if direction == 'ACHAT' else entry + SL
+    for future in price_history[-500:]:
+        if direction == 'ACHAT' and future <= sl_price:
+            return False
+        if direction == 'VENTE' and future >= sl_price:
+            return False
+        if direction == 'ACHAT' and future >= tp1_price:
+            return True
+        if direction == 'VENTE' and future <= tp1_price:
+            return True
+    return False
 
-        if signal:
-            total +=1
-            if (candles[i]["high"] - candles[i]["close"]) >= TP1 and (candles[i]["low"] - candles[i]["close"]) < SL:
-                wins +=1
-    return wins, total
-
-def select_best_strategy(candles):
-    best, best_rate = None, 0
-    for strat in strategy_stats.keys():
-        wins, total = evaluate_strategy(candles, strat)
-        strategy_stats[strat][0] += wins
-        strategy_stats[strat][1] += total
-        rate = (strategy_stats[strat][0] / strategy_stats[strat][1]) if strategy_stats[strat][1] else 0
-        if rate > best_rate:
-            best, best_rate = strat, rate
-    return best
+def send_signal(signal, price):
+    TP1 = price + 300 * 0.01 if signal == 'ACHAT' else price - 300 * 0.01
+    TP2 = price + 1000 * 0.01 if signal == 'ACHAT' else price - 1000 * 0.01
+    SL = price - 150 * 0.01 if signal == 'ACHAT' else price + 150 * 0.01
+    msg = f"{signal}\nPE : {round(price,2)}\nTP1 : {round(TP1,2)}\nTP2 : {round(TP2,2)}\nSL : {round(SL,2)}"
+    bot.send_message(CHAT_ID, msg)
 
 def main():
-    sent_signals = set()
-    last_msg = time.time()
-
-    price = get_live_price()
-    if price:
-        send_telegram(f"ACHAT (Trade test)\nPE : {price:.2f}\nTP1 : {price+TP1:.2f}\nTP2 : {price+TP2:.2f}\nSL : {price-SL:.2f}")
-    else:
-        send_telegram("Erreur API : prix non disponible")
-        return
-
+    price_history = []
     while True:
-        m1 = get_candles("1min")
-        m5 = get_candles("5min")
-        m15 = get_candles("15min")
         price = get_live_price()
-        if not m1 or not m5 or not m15 or price is None:
-            time.sleep(60)
-            continue
+        if price:
+            price_history.append(price)
+            if len(price_history) > 500:
+                signal = analyze_signal(price_history)
+                if signal and backtest(price_history, signal):
+                    send_signal(signal, price)
+                price_history.pop(0)
+            else:
+                bot.send_message(CHAT_ID, f"Trade test (moteur prêt)\nPE : {price}\nTP1 : {round(price + 300 * 0.01,2)}\nTP2 : {round(price + 1000 *0.01,2)}\nSL : {round(price -150 *0.01,2)}")
+        else:
+            bot.send_message(CHAT_ID, "Erreur API : prix non disponible")
+        time.sleep(CHECK_INTERVAL)
 
-        best_strategy = select_best_strategy(m5)
-        if not best_strategy:
-            time.sleep(60)
-            continue
-
-        m1_trend = m1[-1]["close"] > m1[-2]["close"]
-        m5_trend = m5[-1]["close"] > m5[-2]["close"]
-        m15_trend = m15[-1]["close"] > m15[-2]["close"]
-
-        direction = "ACHAT" if m1_trend and m5_trend and m15_trend else "VENTE" if not m1_trend and not m5_trend and not m15_trend else None
-
-        if direction:
-            pe = price
-            tp1 = pe + TP1 if direction == "ACHAT" else pe - TP1
-            tp2 = pe + TP2 if direction == "ACHAT" else pe - TP2
-            sl = pe - SL if direction == "ACHAT" else pe + SL
-            now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-            msg = f"{direction} ({best_strategy})\nPE : {pe:.2f}\nTP1 : {tp1:.2f}\nTP2 : {tp2:.2f}\nSL : {sl:.2f}\n[{now}]"
-            key = f"{direction}_{best_strategy}_{int(pe)}"
-            if key not in sent_signals:
-                send_telegram(msg)
-                sent_signals.add(key)
-
-        if time.time() - last_msg > 7200:
-            now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-            send_telegram(f"Aucun signal parfait détecté pour le moment.\n[{now}]")
-            last_msg = time.time()
-
-        time.sleep(60)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
