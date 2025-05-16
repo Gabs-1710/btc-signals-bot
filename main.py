@@ -2,92 +2,104 @@ import requests
 import pandas as pd
 import time
 import telebot
-import ta
 
-# CONFIGURATION
-API_KEY = 'd7ddc825488f4b078fba7af6d01c32c5'
-TELEGRAM_TOKEN = '7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU'
-CHAT_ID = '2128959111'
-SYMBOL = 'BTC/USD'
-INTERVAL = '1min'
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+# === PARAMÈTRES ===
+API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
+BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
+CHAT_ID = "2128959111"
+SYMBOL = "BTC/USD"
+INTERVAL = "1min"
+HIST_LIMIT = 500
+TP1_PIPS = 300
+TP2_PIPS = 1000
+SL_PIPS = 150
 
-def get_live_data():
-    url = f'https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&apikey={API_KEY}&outputsize=500'
+bot = telebot.TeleBot(BOT_TOKEN)
+envoyes = set()
+trade_test_envoye = False
+
+def envoyer_message(msg):
+    try:
+        bot.send_message(CHAT_ID, msg)
+    except:
+        pass
+
+def recuperer_bougies():
+    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={HIST_LIMIT}&apikey={API_KEY}"
     r = requests.get(url)
     data = r.json()
-    if 'values' not in data:
+    if "values" not in data:
         return None
-    df = pd.DataFrame(data['values'])
-    df['close'] = pd.to_numeric(df['close'])
-    df = df.iloc[::-1]
-    return df
+    df = pd.DataFrame(data["values"])
+    df = df.rename(columns={"datetime": "time"})
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.sort_values("time")
+    df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
+    return df.reset_index(drop=True)
 
-def detect_order_block(df):
-    return df['close'].iloc[-2] < df['open'].iloc[-2] and df['close'].iloc[-1] > df['open'].iloc[-1]
-
-def detect_fvg(df):
-    prev_low = df['low'].iloc[-2]
-    curr_high = df['high'].iloc[-1]
-    return curr_high - prev_low > (df['high'].max() - df['low'].min()) * 0.01
-
-def detect_choch_bos(df):
-    return df['high'].iloc[-1] > df['high'].iloc[-2] and df['low'].iloc[-1] > df['low'].iloc[-2]
-
-def apply_strategies(df):
-    df['ema'] = df['close'].ewm(span=10, adjust=False).mean()
-    df['rsi'] = ta.momentum.rsi(df['close'], window=14)
+def strategie_dominante(df):
     signals = []
-    if (df['close'].iloc[-1] > df['ema'].iloc[-1] and 
-        df['rsi'].iloc[-1] < 70 and 
-        detect_order_block(df) and 
-        detect_fvg(df) and 
-        detect_choch_bos(df)):
-        signals.append('BUY')
-    if (df['close'].iloc[-1] < df['ema'].iloc[-1] and 
-        df['rsi'].iloc[-1] > 30 and 
-        detect_order_block(df) and 
-        detect_fvg(df) and 
-        detect_choch_bos(df)):
-        signals.append('SELL')
-    return signals
+    for i in range(10, len(df) - 20):
+        zone = df.iloc[i-10:i]
+        future = df.iloc[i:i+20]
+        range_zone = zone["high"].max() - zone["low"].min()
+        candle = df.iloc[i]
+        if range_zone < 300:
+            if candle["close"] > candle["open"]:
+                tp = candle["close"] + TP1_PIPS
+                sl = candle["close"] - SL_PIPS
+                if future["low"].min() > sl and future["high"].max() >= tp:
+                    signals.append(("ACHAT", candle["close"], df.iloc[i+1:]))
+            elif candle["close"] < candle["open"]:
+                tp = candle["close"] - TP1_PIPS
+                sl = candle["close"] + SL_PIPS
+                if future["high"].max() < sl and future["low"].min() <= tp:
+                    signals.append(("VENTE", candle["close"], df.iloc[i+1:]))
+    return signals[-1] if signals else None
 
-def simulate_trade(entry, tp1, sl, df):
-    for price in df['close']:
-        if price <= sl:
-            return False
-        if price >= tp1:
-            return True
-    return False
+def signal_exploitable(signal, pe_reel):
+    sens, pe_simule, _ = signal
+    return abs(pe_simule - pe_reel) <= 20
 
-def send_telegram(message):
-    bot.send_message(CHAT_ID, message)
+def generer_message(signal):
+    sens, pe, _ = signal
+    tp1 = round(pe + TP1_PIPS, 2) if sens == "ACHAT" else round(pe - TP1_PIPS, 2)
+    tp2 = round(pe + TP2_PIPS, 2) if sens == "ACHAT" else round(pe - TP2_PIPS, 2)
+    sl = round(pe - SL_PIPS, 2) if sens == "ACHAT" else round(pe + SL_PIPS, 2)
+    return f"{sens}\nPE : {round(pe,2)}\nTP1 : {tp1}\nTP2 : {tp2}\nSL : {sl}"
 
-def main():
-    # Trade test au démarrage (une seule fois)
-    price_data = get_live_data()
-    if price_data is not None:
-        price = price_data['close'].iloc[-1]
-        send_telegram(f"Trade test (moteur prêt)\nPE : {price}\nTP1 : {price + 300}\nTP2 : {price + 1000}\nSL : {price - 150}")
+def envoyer_trade_test(df):
+    if df is None or len(df) < 10:
+        return
+    prix = df.iloc[-1]["close"]
+    pe = round(prix, 2)
+    tp1 = pe + TP1_PIPS
+    tp2 = pe + TP2_PIPS
+    sl = pe - SL_PIPS
+    msg = f"TRADE TEST\nACHAT\nPE : {pe}\nTP1 : {tp1}\nTP2 : {tp2}\nSL : {sl}"
+    envoyer_message(msg)
 
-    while True:
-        df = get_live_data()
-        if df is None:
-            send_telegram("Erreur API : prix non disponible")
-            time.sleep(120)
-            continue
+# === BOUCLE PRINCIPALE ===
+while True:
+    try:
+        df = recuperer_bougies()
+        if df is not None and len(df) > 100:
+            if not trade_test_envoye:
+                envoyer_trade_test(df)
+                trade_test_envoye = True
 
-        signals = apply_strategies(df)
-        for signal in signals:
-            price = df['close'].iloc[-1]
-            pe = price
-            tp1 = pe + 300 if signal == 'BUY' else pe - 300
-            sl = pe - 150 if signal == 'BUY' else pe + 150
-
-            if simulate_trade(pe, tp1, sl, df):
-                message = f"{'ACHAT' if signal == 'BUY' else 'VENTE'}\nPE : {round(pe, 2)}\nTP1 : {round(tp1, 2)}\nTP2 : {round(tp1 + 700 if signal == 'BUY' else tp1 - 700, 2)}\nSL : {round(sl, 2)}"
-                send_telegram(message)
+            signal = strategie_dominante(df)
+            if signal:
+                sens, pe, _ = signal
+                cle = (sens, round(pe, 1))
+                if cle not in envoyes:
+                    pe_reel = df.iloc[-1]["close"]
+                    if signal_exploitable(signal, pe_reel):
+                        msg = generer_message(signal)
+                        envoyer_message(msg)
+                        envoyes.add(cle)
         time.sleep(60)
 
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        print("Erreur :", e)
+        time.sleep(60)
