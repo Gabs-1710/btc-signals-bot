@@ -3,7 +3,7 @@ import pandas as pd
 import time
 import telebot
 
-# === PARAMÈTRES ===
+# === CONFIGURATION ===
 API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
@@ -13,6 +13,7 @@ HIST_LIMIT = 500
 TP1_PIPS = 300
 TP2_PIPS = 1000
 SL_PIPS = 150
+TOLERANCE = 20
 
 bot = telebot.TeleBot(BOT_TOKEN)
 envoyes = set()
@@ -21,85 +22,92 @@ trade_test_envoye = False
 def envoyer_message(msg):
     try:
         bot.send_message(CHAT_ID, msg)
-    except:
-        pass
+    except Exception as e:
+        print("Erreur Telegram :", e)
 
 def recuperer_bougies():
-    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={HIST_LIMIT}&apikey={API_KEY}"
-    r = requests.get(url)
-    data = r.json()
-    if "values" not in data:
+    try:
+        url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={HIST_LIMIT}&apikey={API_KEY}"
+        r = requests.get(url)
+        data = r.json()
+        if "values" not in data:
+            return None
+        df = pd.DataFrame(data["values"])
+        df = df.rename(columns={"datetime": "time"})
+        df["time"] = pd.to_datetime(df["time"])
+        df = df.sort_values("time")
+        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
+        return df.reset_index(drop=True)
+    except Exception as e:
+        print("Erreur récupération bougies :", e)
         return None
-    df = pd.DataFrame(data["values"])
-    df = df.rename(columns={"datetime": "time"})
-    df["time"] = pd.to_datetime(df["time"])
-    df = df.sort_values("time")
-    df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
-    return df.reset_index(drop=True)
 
-def strategie_dominante(df):
-    signals = []
-    for i in range(10, len(df) - 20):
-        zone = df.iloc[i-10:i]
-        future = df.iloc[i:i+20]
-        range_zone = zone["high"].max() - zone["low"].min()
+def strategie_intelligente(df):
+    for i in range(30, len(df) - 50):
+        zone = df.iloc[i-20:i]
         candle = df.iloc[i]
-        if range_zone < 300:
-            if candle["close"] > candle["open"]:
-                tp = candle["close"] + TP1_PIPS
-                sl = candle["close"] - SL_PIPS
-                if future["low"].min() > sl and future["high"].max() >= tp:
-                    signals.append(("ACHAT", candle["close"], df.iloc[i+1:]))
-            elif candle["close"] < candle["open"]:
-                tp = candle["close"] - TP1_PIPS
-                sl = candle["close"] + SL_PIPS
-                if future["high"].max() < sl and future["low"].min() <= tp:
-                    signals.append(("VENTE", candle["close"], df.iloc[i+1:]))
-    return signals[-1] if signals else None
+        future = df.iloc[i+1:i+50]
+        compression = zone["high"].max() - zone["low"].min() < 300
 
-def signal_exploitable(signal, pe_reel):
-    sens, pe_simule, _ = signal
-    return abs(pe_simule - pe_reel) <= 20
+        if compression:
+            if candle["close"] > candle["open"]:  # ACHAT
+                pe = candle["close"]
+                tp1 = pe + TP1_PIPS
+                tp2 = pe + TP2_PIPS
+                sl = pe - SL_PIPS
+                low_future = future["low"].min()
+                high_future = future["high"].max()
+                if low_future > sl and high_future >= tp1:
+                    return ("ACHAT", pe, tp1, tp2, sl)
+            elif candle["close"] < candle["open"]:  # VENTE
+                pe = candle["close"]
+                tp1 = pe - TP1_PIPS
+                tp2 = pe - TP2_PIPS
+                sl = pe + SL_PIPS
+                high_future = future["high"].max()
+                low_future = future["low"].min()
+                if high_future < sl and low_future <= tp1:
+                    return ("VENTE", pe, tp1, tp2, sl)
+    return None
+
+def exploitable(signal, prix_reel):
+    if not signal: return False
+    sens, pe, _, _, _ = signal
+    return abs(pe - prix_reel) <= TOLERANCE
 
 def generer_message(signal):
-    sens, pe, _ = signal
-    tp1 = round(pe + TP1_PIPS, 2) if sens == "ACHAT" else round(pe - TP1_PIPS, 2)
-    tp2 = round(pe + TP2_PIPS, 2) if sens == "ACHAT" else round(pe - TP2_PIPS, 2)
-    sl = round(pe - SL_PIPS, 2) if sens == "ACHAT" else round(pe + SL_PIPS, 2)
-    return f"{sens}\nPE : {round(pe,2)}\nTP1 : {tp1}\nTP2 : {tp2}\nSL : {sl}"
+    sens, pe, tp1, tp2, sl = signal
+    return f"{sens}\nPE : {round(pe,2)}\nTP1 : {round(tp1,2)}\nTP2 : {round(tp2,2)}\nSL : {round(sl,2)}"
 
 def envoyer_trade_test(df):
-    if df is None or len(df) < 10:
-        return
+    if df is None or len(df) < 10: return
     prix = df.iloc[-1]["close"]
     pe = round(prix, 2)
-    tp1 = pe + TP1_PIPS
-    tp2 = pe + TP2_PIPS
-    sl = pe - SL_PIPS
-    msg = f"TRADE TEST\nACHAT\nPE : {pe}\nTP1 : {tp1}\nTP2 : {tp2}\nSL : {sl}"
+    msg = f"TRADE TEST\nACHAT\nPE : {pe}\nTP1 : {pe + TP1_PIPS}\nTP2 : {pe + TP2_PIPS}\nSL : {pe - SL_PIPS}"
     envoyer_message(msg)
 
-# === BOUCLE PRINCIPALE ===
+# === MOTEUR ===
 while True:
     try:
         df = recuperer_bougies()
-        if df is not None and len(df) > 100:
+        if df is not None and len(df) >= 100:
             if not trade_test_envoye:
                 envoyer_trade_test(df)
                 trade_test_envoye = True
 
-            signal = strategie_dominante(df)
+            signal = strategie_intelligente(df)
             if signal:
-                sens, pe, _ = signal
+                sens, pe, _, _, _ = signal
                 cle = (sens, round(pe, 1))
-                if cle not in envoyes:
-                    pe_reel = df.iloc[-1]["close"]
-                    if signal_exploitable(signal, pe_reel):
-                        msg = generer_message(signal)
-                        envoyer_message(msg)
-                        envoyes.add(cle)
+                prix_reel = df.iloc[-1]["close"]
+
+                if cle not in envoyes and exploitable(signal, prix_reel):
+                    msg = generer_message(signal)
+                    envoyer_message(msg)
+                    envoyes.add(cle)
+
         time.sleep(60)
 
     except Exception as e:
-        print("Erreur :", e)
+        print("Erreur principale :", e)
         time.sleep(60)
