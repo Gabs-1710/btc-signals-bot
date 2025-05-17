@@ -22,21 +22,27 @@ test_envoye = False
 def envoyer_message(msg):
     try:
         bot.send_message(CHAT_ID, msg)
+        print("Message envoyé :", msg)
     except Exception as e:
         print("Erreur Telegram :", e)
 
 def get_bougies():
-    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={LIMIT}&apikey={API_KEY}"
-    r = requests.get(url)
-    data = r.json()
-    if "values" not in data:
+    try:
+        url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={LIMIT}&apikey={API_KEY}"
+        r = requests.get(url)
+        data = r.json()
+        if "values" not in data:
+            print("Erreur : données non disponibles")
+            return None
+        df = pd.DataFrame(data["values"])
+        df = df.rename(columns={"datetime": "time"})
+        df["time"] = pd.to_datetime(df["time"])
+        df = df.sort_values("time").reset_index(drop=True)
+        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
+        return df
+    except Exception as e:
+        print("Erreur récupération bougies :", e)
         return None
-    df = pd.DataFrame(data["values"])
-    df = df.rename(columns={"datetime": "time"})
-    df["time"] = pd.to_datetime(df["time"])
-    df = df.sort_values("time").reset_index(drop=True)
-    df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
-    return df
 
 def simuler_trade(df, sens, pe):
     future = df[df["time"] > df[df["close"] == pe]["time"].values[0]]
@@ -85,16 +91,24 @@ def generer_message(sens, pe):
     return f"{sens}\nPE : {round(pe,2)}\nTP1 : {round(tp1,2)}\nTP2 : {round(tp2,2)}\nSL : {round(sl,2)}"
 
 def envoyer_trade_test(df):
-    prix = df.iloc[-1]["close"]
-    pe = round(prix, 2)
-    msg = f"TRADE TEST\nACHAT\nPE : {pe}\nTP1 : {pe + TP1_PIPS}\nTP2 : {pe + TP2_PIPS}\nSL : {pe - SL_PIPS}"
-    envoyer_message(msg)
+    try:
+        if df is None or len(df) < 10:
+            print("Pas assez de données pour Trade test.")
+            return
+        prix = df.iloc[-1]["close"]
+        pe = round(prix, 2)
+        msg = f"TRADE TEST\nACHAT\nPE : {pe}\nTP1 : {pe + TP1_PIPS}\nTP2 : {pe + TP2_PIPS}\nSL : {pe - SL_PIPS}"
+        envoyer_message(msg)
+        print("Trade test envoyé :", msg)
+    except Exception as e:
+        print("Erreur lors du Trade test :", e)
 
 # === BOUCLE PRINCIPALE ===
 while True:
     try:
         df = get_bougies()
         if df is not None and len(df) >= 100:
+
             if not test_envoye:
                 envoyer_trade_test(df)
                 test_envoye = True
