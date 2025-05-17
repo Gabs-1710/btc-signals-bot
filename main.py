@@ -45,28 +45,30 @@ def get_bougies():
         return None
 
 def simuler_trade(df, sens, pe):
-    future = df[df["time"] > df[df["close"] == pe]["time"].values[0]]
-    sl = pe - SL_PIPS if sens == "ACHAT" else pe + SL_PIPS
-    tp = pe + TP1_PIPS if sens == "ACHAT" else pe - TP1_PIPS
+    try:
+        future = df[df["time"] > df[df["close"] == pe]["time"].values[0]]
+        sl = pe - SL_PIPS if sens == "ACHAT" else pe + SL_PIPS
+        tp = pe + TP1_PIPS if sens == "ACHAT" else pe - TP1_PIPS
 
-    for _, row in future.iterrows():
-        if sens == "ACHAT":
-            if row["low"] <= sl:
-                return False
-            if row["high"] >= tp:
-                return True
-        else:
-            if row["high"] >= sl:
-                return False
-            if row["low"] <= tp:
-                return True
-    return False
+        for _, row in future.iterrows():
+            if sens == "ACHAT":
+                if row["low"] <= sl:
+                    return False
+                if row["high"] >= tp:
+                    return True
+            else:
+                if row["high"] >= sl:
+                    return False
+                if row["low"] <= tp:
+                    return True
+        return False
+    except:
+        return False
 
 def detecter_signal(df):
     for i in range(30, len(df)-50):
         zone = df.iloc[i-20:i]
         bougie = df.iloc[i]
-        future = df.iloc[i+1:i+500]
 
         compression = zone["high"].max() - zone["low"].min() < 300
         if not compression:
