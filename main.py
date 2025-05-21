@@ -14,6 +14,7 @@ TP1_PIPS = 300
 TP2_PIPS = 1000
 SL_PIPS = 150
 TOLERANCE = 20
+HISTO = 500
 
 bot = telebot.TeleBot(BOT_TOKEN)
 envoyes = set()
@@ -44,35 +45,50 @@ def get_bougies():
         print("Erreur récupération bougies :", e)
         return None
 
+def ema(df, period):
+    return df["close"].ewm(span=period, adjust=False).mean()
+
+def in_fibonacci_zone(pe, retracement_base):
+    fib_618 = retracement_base * 0.618
+    fib_786 = retracement_base * 0.786
+    return fib_786 <= pe <= fib_618 or fib_618 <= pe <= fib_786
+
+def detect_order_block(df, sens):
+    zone = df.iloc[-15:]
+    if sens == "ACHAT":
+        return zone["low"].min()
+    else:
+        return zone["high"].max()
+
 def simuler_trade(df, sens, pe):
     try:
-        future = df[df["time"] > df[df["close"] == pe]["time"].values[0]]
         sl = pe - SL_PIPS if sens == "ACHAT" else pe + SL_PIPS
-        tp = pe + TP1_PIPS if sens == "ACHAT" else pe - TP1_PIPS
+        tp1 = pe + TP1_PIPS if sens == "ACHAT" else pe - TP1_PIPS
 
-        for _, row in future.iterrows():
+        for i in range(min(HISTO, len(df))):
+            row = df.iloc[i]
             if sens == "ACHAT":
                 if row["low"] <= sl:
                     return False
-                if row["high"] >= tp:
+                if row["high"] >= tp1:
                     return True
             else:
                 if row["high"] >= sl:
                     return False
-                if row["low"] <= tp:
+                if row["low"] <= tp1:
                     return True
         return False
     except:
         return False
 
 def detecter_signal(df):
-    for i in range(30, len(df)-50):
+    ema_fast = ema(df, 50)
+    ema_slow = ema(df, 200)
+
+    for i in range(20, len(df) - HISTO):
         zone = df.iloc[i-20:i]
         bougie = df.iloc[i]
-
-        compression = zone["high"].max() - zone["low"].min() < 300
-        if not compression:
-            continue
+        prix = bougie["close"]
 
         if bougie["close"] > bougie["open"]:
             sens = "ACHAT"
@@ -81,16 +97,31 @@ def detecter_signal(df):
         else:
             continue
 
-        pe = round(bougie["close"], 2)
-        if simuler_trade(df.iloc[i:], sens, pe):
-            return (sens, pe)
+        if sens == "ACHAT" and not (ema_fast[i] > ema_slow[i]):
+            continue
+        if sens == "VENTE" and not (ema_fast[i] < ema_slow[i]):
+            continue
+
+        retracement = zone["high"].max() - zone["low"].min()
+        if not in_fibonacci_zone(prix, retracement):
+            continue
+
+        ob = detect_order_block(zone, sens)
+        if sens == "ACHAT" and prix < ob:
+            continue
+        if sens == "VENTE" and prix > ob:
+            continue
+
+        if simuler_trade(df.iloc[i:], sens, prix):
+            return sens, prix
+
     return None
 
 def generer_message(sens, pe):
     tp1 = pe + TP1_PIPS if sens == "ACHAT" else pe - TP1_PIPS
     tp2 = pe + TP2_PIPS if sens == "ACHAT" else pe - TP2_PIPS
     sl = pe - SL_PIPS if sens == "ACHAT" else pe + SL_PIPS
-    return f"{sens}\nPE : {round(pe,2)}\nTP1 : {round(tp1,2)}\nTP2 : {round(tp2,2)}\nSL : {round(sl,2)}"
+    return f"{sens}\nPE : {round(pe, 2)}\nTP1 : {round(tp1, 2)}\nTP2 : {round(tp2, 2)}\nSL : {round(sl, 2)}"
 
 def envoyer_trade_test(df):
     try:
@@ -110,7 +141,6 @@ while True:
     try:
         df = get_bougies()
         if df is not None and len(df) >= 100:
-
             if not test_envoye:
                 envoyer_trade_test(df)
                 test_envoye = True
