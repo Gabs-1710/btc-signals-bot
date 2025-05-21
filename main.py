@@ -152,17 +152,19 @@ def envoyer_trade_test(df):
     msg = f"TRADE TEST\nACHAT\nPE : {prix:.2f}\nTP1 : {prix + TP1_PIPS:.2f}\nTP2 : {prix + TP2_PIPS:.2f}\nSL : {prix - SL_PIPS:.2f}"
     envoyer_message(msg)
 
+# === ENVOI IMMÉDIAT DU TRADE TEST ===
+df = get_bougies()
+if df is not None:
+    envoyer_trade_test(df)
+    test_envoye = True
+    time.sleep(2)
+
 # === BOUCLE PRINCIPALE ===
 while True:
     try:
         df = get_bougies()
         if df is not None and len(df) >= 100:
-            if not test_envoye:
-                envoyer_trade_test(df)
-                test_envoye = True
-
             verifier_suivi(df)
-
             if not est_dans_une_announcement():
                 signal = detecter_signal(df)
                 if signal:
