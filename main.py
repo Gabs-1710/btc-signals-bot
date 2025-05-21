@@ -1,181 +1,156 @@
 import requests
 import pandas as pd
 import time
+from datetime import datetime
 import telebot
-from datetime import datetime, timedelta
 
-# === CONFIGURATION ===
-API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
+# === PARAMÈTRES UTILISATEUR ===
+API_KEY = "2055fb1ec82c4ff5b487ce449faf8370"
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
 SYMBOL = "BTC/USD"
 INTERVAL = "1min"
-LIMIT = 600
 TP1_PIPS = 300
 TP2_PIPS = 1000
 SL_PIPS = 150
-TOLERANCE = 20
-HISTO = 500
-ANNONCES = []  # Les annonces sont ajoutées automatiquement (format: "HH:MM")
 
 bot = telebot.TeleBot(BOT_TOKEN)
-trades_suivis = []
-test_envoye = False
+dernier_signal = None
+trade_envoyes = []
 
-# === FONCTIONS ===
-
+# === FONCTIONS DE BASE ===
 def envoyer_message(msg):
     try:
         bot.send_message(CHAT_ID, msg)
     except Exception as e:
         print("Erreur Telegram :", e)
 
-def get_bougies():
+def get_bougies(limit=500):
     try:
-        url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={LIMIT}&apikey={API_KEY}"
+        url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={limit}&apikey={API_KEY}"
         r = requests.get(url)
         data = r.json()
         if "values" not in data:
+            print("Erreur API :", data)
             return None
         df = pd.DataFrame(data["values"])
-        df["time"] = pd.to_datetime(df["datetime"])
-        df = df.sort_values("time").reset_index(drop=True)
-        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
-        return df
+        df = df.rename(columns={"datetime": "time"}).iloc[::-1]
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["close"] = df["close"].astype(float)
+        df["time"] = pd.to_datetime(df["time"])
+        return df.reset_index(drop=True)
     except Exception as e:
         print("Erreur récupération bougies :", e)
         return None
 
-def ema(df, period):
-    return df["close"].ewm(span=period, adjust=False).mean()
-
-def detect_order_block(df, sens):
-    zone = df.iloc[-15:]
-    if sens == "ACHAT":
-        return zone["low"].min()
-    else:
-        return zone["high"].max()
-
-def in_fibonacci_zone(pe, retracement):
-    fib_618 = retracement * 0.618
-    fib_786 = retracement * 0.786
-    return fib_786 <= pe <= fib_618 or fib_618 <= pe <= fib_786
-
-def simuler_trade(df, sens, pe):
-    sl = pe - SL_PIPS if sens == "ACHAT" else pe + SL_PIPS
-    tp1 = pe + TP1_PIPS if sens == "ACHAT" else pe - TP1_PIPS
-    for i in range(min(HISTO, len(df))):
-        row = df.iloc[i]
-        if sens == "ACHAT":
-            if row["low"] <= sl:
-                return False
-            if row["high"] >= tp1:
-                return True
-        else:
-            if row["high"] >= sl:
-                return False
-            if row["low"] <= tp1:
-                return True
-    return False
-
-def detecter_signal(df):
-    ema_fast = ema(df, 50)
-    ema_slow = ema(df, 200)
-    for i in range(20, len(df) - HISTO):
-        zone = df.iloc[i-20:i]
-        bougie = df.iloc[i]
-        prix = bougie["close"]
-        sens = "ACHAT" if bougie["close"] > bougie["open"] else "VENTE"
-        if sens == "ACHAT" and not (ema_fast[i] > ema_slow[i]):
-            continue
-        if sens == "VENTE" and not (ema_fast[i] < ema_slow[i]):
-            continue
-        retracement = zone["high"].max() - zone["low"].min()
-        if not in_fibonacci_zone(prix, retracement):
-            continue
-        ob = detect_order_block(zone, sens)
-        if sens == "ACHAT" and prix < ob:
-            continue
-        if sens == "VENTE" and prix > ob:
-            continue
-        if simuler_trade(df.iloc[i:], sens, prix):
-            return sens, prix
-    return None
-
-def generer_message(sens, pe):
-    tp1 = pe + TP1_PIPS if sens == "ACHAT" else pe - TP1_PIPS
-    tp2 = pe + TP2_PIPS if sens == "ACHAT" else pe - TP2_PIPS
-    sl = pe - SL_PIPS if sens == "ACHAT" else pe + SL_PIPS
-    return f"{sens}\nPE : {round(pe, 2)}\nTP1 : {round(tp1, 2)}\nTP2 : {round(tp2, 2)}\nSL : {round(sl, 2)}"
-
-def verifier_suivi(df):
-    global trades_suivis
-    nouveaux_suivis = []
-    for trade in trades_suivis:
-        sens, pe = trade["sens"], trade["pe"]
-        sl = pe - SL_PIPS if sens == "ACHAT" else pe + SL_PIPS
-        tp1 = pe + TP1_PIPS if sens == "ACHAT" else pe - TP1_PIPS
-        for i in range(len(df)):
-            low, high = df.iloc[i]["low"], df.iloc[i]["high"]
-            if sens == "ACHAT":
-                if low <= sl:
-                    envoyer_message(f"SL touché – Trade à {pe} perdu ❌")
-                    break
-                if high >= tp1:
-                    envoyer_message(f"TP1 atteint – Trade à {pe} réussi ✅")
-                    break
-            else:
-                if high >= sl:
-                    envoyer_message(f"SL touché – Trade à {pe} perdu ❌")
-                    break
-                if low <= tp1:
-                    envoyer_message(f"TP1 atteint – Trade à {pe} réussi ✅")
-                    break
-        else:
-            nouveaux_suivis.append(trade)
-    trades_suivis = nouveaux_suivis
-
-def est_dans_une_announcement():
-    heure_actuelle = datetime.utcnow().strftime("%H:%M")
-    for h in ANNONCES:
-        h_utc = datetime.strptime(h, "%H:%M")
-        debut = (h_utc - timedelta(minutes=30)).strftime("%H:%M")
-        fin = (h_utc + timedelta(minutes=30)).strftime("%H:%M")
-        if debut <= heure_actuelle <= fin:
-            return True
-    return False
-
 def envoyer_trade_test(df):
-    if df is None or len(df) < 10:
-        return
-    prix = df.iloc[-1]["close"]
-    msg = f"TRADE TEST\nACHAT\nPE : {prix:.2f}\nTP1 : {prix + TP1_PIPS:.2f}\nTP2 : {prix + TP2_PIPS:.2f}\nSL : {prix - SL_PIPS:.2f}"
+    prix = df["close"].iloc[-1]
+    msg = f"""TRADE TEST
+ACHAT
+PE : {round(prix, 2)}
+TP1 : {round(prix + TP1_PIPS, 2)}
+TP2 : {round(prix + TP2_PIPS, 2)}
+SL : {round(prix - SL_PIPS, 2)}"""
     envoyer_message(msg)
 
-# === ENVOI IMMÉDIAT DU TRADE TEST ===
-df = get_bougies()
-if df is not None:
-    envoyer_trade_test(df)
-    test_envoye = True
-    time.sleep(2)
+# === STRATÉGIES PUISSANTES ===
+def strategies_valides(df):
+    recent = df.tail(5)
+    haussier = all(recent["close"] > recent["open"])
+    baissier = all(recent["close"] < recent["open"])
+    ema_fast = df["close"].rolling(5).mean()
+    ema_slow = df["close"].rolling(20).mean()
+    croisement_ema = ema_fast.iloc[-1] > ema_slow.iloc[-1]
+    ob_detecte = df["open"].iloc[-2] < df["close"].iloc[-2] and df["open"].iloc[-1] > df["close"].iloc[-1]
+    fvg_detecte = abs(df["high"].iloc[-2] - df["low"].iloc[-1]) > 0.5
+    compression = df["high"].tail(10).max() - df["low"].tail(10).min() < 1000
+
+    valid_achat = haussier and croisement_ema and not ob_detecte and compression
+    valid_vente = baissier and not croisement_ema and ob_detecte and compression
+
+    if valid_achat:
+        return "ACHAT"
+    elif valid_vente:
+        return "VENTE"
+    else:
+        return None
+
+# === SIMULATION TP1 / SL (sur 200 bougies max) ===
+def simuler_tp_sl(df, sens, pe):
+    for i in range(1, 200):
+        if i >= len(df):
+            break
+        high = df["high"].iloc[-i]
+        low = df["low"].iloc[-i]
+        if sens == "ACHAT":
+            if low <= pe - SL_PIPS:
+                return False
+            if high >= pe + TP1_PIPS:
+                return True
+        elif sens == "VENTE":
+            if high >= pe + SL_PIPS:
+                return False
+            if low <= pe - TP1_PIPS:
+                return True
+    return False
+
+# === DÉTECTION PRINCIPALE ===
+def detecter_signal(df):
+    global dernier_signal
+    if len(df) < 200:
+        return None
+
+    pe = round(df["close"].iloc[-1], 2)
+    sens = strategies_valides(df)
+
+    if not sens:
+        return None
+
+    if not simuler_tp_sl(df[::-1], sens, pe):
+        return None
+
+    id_signal = f"{sens}_{pe}"
+    if id_signal == dernier_signal or id_signal in trade_envoyes:
+        return None
+
+    tp1 = round(pe + TP1_PIPS if sens == "ACHAT" else pe - TP1_PIPS, 2)
+    tp2 = round(pe + TP2_PIPS if sens == "ACHAT" else pe - TP2_PIPS, 2)
+    sl = round(pe - SL_PIPS if sens == "ACHAT" else pe + SL_PIPS, 2)
+    dernier_signal = id_signal
+    trade_envoyes.append(id_signal)
+
+    return {
+        "type": sens,
+        "PE": pe,
+        "TP1": tp1,
+        "TP2": tp2,
+        "SL": sl,
+        "UTC": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    }
 
 # === BOUCLE PRINCIPALE ===
-while True:
-    try:
+def main():
+    print("Lancement du robot trader parfait...")
+    df = get_bougies()
+    if df is not None:
+        envoyer_trade_test(df)
+        time.sleep(2)
+
+    while True:
         df = get_bougies()
-        if df is not None and len(df) >= 100:
-            verifier_suivi(df)
-            if not est_dans_une_announcement():
-                signal = detecter_signal(df)
-                if signal:
-                    sens, pe = signal
-                    prix_reel = df.iloc[-1]["close"]
-                    if abs(prix_reel - pe) <= TOLERANCE:
-                        msg = generer_message(sens, pe)
-                        envoyer_message(msg)
-                        trades_suivis.append({"sens": sens, "pe": pe})
+        if df is not None:
+            signal = detecter_signal(df)
+            if signal:
+                msg = f"""{signal['type']}
+PE : {signal['PE']}
+TP1 : {signal['TP1']}
+TP2 : {signal['TP2']}
+SL : {signal['SL']}
+UTC : {signal['UTC']}"""
+                envoyer_message(msg)
         time.sleep(60)
 
-    except Exception as e:
-        print("Erreur principale :", e)
-        time.sleep(60)
+if __name__ == "__main__":
+    main()
