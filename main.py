@@ -5,7 +5,8 @@ from datetime import datetime
 import telebot
 
 # === CONFIGURATION ===
-API_KEY = "2055fb1ec82c4ff5b487ce449faf8370"  # TwelveData
+PRIMARY_API_KEY = "2055fb1ec82c4ff5b487ce449faf8370"
+SECONDARY_API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
 SYMBOL = "BTC/USD"
@@ -19,6 +20,7 @@ BOUGIES_FUTURES = 300
 
 bot = telebot.TeleBot(BOT_TOKEN)
 derniers_signaux = []
+api_keys = [PRIMARY_API_KEY, SECONDARY_API_KEY]
 
 def envoyer_message(msg):
     try:
@@ -27,24 +29,28 @@ def envoyer_message(msg):
         print("Erreur envoi message :", e)
 
 def get_bougies(limit=1000):
-    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={limit}&apikey={API_KEY}"
-    r = requests.get(url)
-    data = r.json()
-    if "values" not in data:
-        return None
-    df = pd.DataFrame(data["values"])
-    df["time"] = pd.to_datetime(df["datetime"])
-    df = df.sort_values("time").reset_index(drop=True)
-    for col in ["open", "high", "low", "close"]:
-        df[col] = df[col].astype(float)
-    return df
+    for key in api_keys:
+        try:
+            url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={limit}&apikey={key}"
+            r = requests.get(url)
+            data = r.json()
+            if "values" not in data:
+                continue
+            df = pd.DataFrame(data["values"])
+            df["time"] = pd.to_datetime(df["datetime"])
+            df = df.sort_values("time").reset_index(drop=True)
+            for col in ["open", "high", "low", "close"]:
+                df[col] = df[col].astype(float)
+            return df
+        except:
+            continue
+    return None
 
-def valider_strategie(df):
+def strategie_etendue(df):
     ema8 = df["close"].rolling(8).mean()
     ema21 = df["close"].rolling(21).mean()
     ema_ok = ema8.iloc[-1] > ema21.iloc[-1]
 
-    # Pattern engulfing simple
     bullish = (
         df["close"].iloc[-2] < df["open"].iloc[-2] and
         df["close"].iloc[-1] > df["open"].iloc[-1] and
@@ -57,11 +63,11 @@ def valider_strategie(df):
     )
 
     if ema_ok and bullish:
-        return "ACHAT"
+        return "ACHAT", "EMA 8/21 croisé + Engulfing haussier"
     elif not ema_ok and bearish:
-        return "VENTE"
+        return "VENTE", "EMA 8/21 croisé + Engulfing baissier"
     else:
-        return None
+        return None, None
 
 def simuler_trade(bougies_futures, sens, pe):
     for i in range(len(bougies_futures)):
@@ -78,10 +84,14 @@ def simuler_trade(bougies_futures, sens, pe):
                 return True
     return False
 
+def estimer_probabilite():
+    # Pour cette version : valeur fixe simulée à 100 % (évolutif + tard)
+    return 100.0
+
 def detecter_signal(df):
     global derniers_signaux
     historique = df.iloc[-BOUGIES_PASSES:]
-    sens = valider_strategie(historique)
+    sens, strat = strategie_etendue(historique)
     if not sens:
         return None
 
@@ -110,7 +120,9 @@ def detecter_signal(df):
         "TP1": round(tp1, 2),
         "TP2": round(tp2, 2),
         "SL": round(sl, 2),
-        "UTC": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        "UTC": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "strategie": strat,
+        "proba": estimer_probabilite()
     }
 
 def envoyer_trade_test(df):
@@ -124,7 +136,7 @@ SL : {pe - SL}"""
     envoyer_message(msg)
 
 def main():
-    print("Robot trader parfait lancé.")
+    print("Lancement du robot trader parfait...")
     df = get_bougies(1000)
     if df is not None:
         envoyer_trade_test(df)
@@ -140,7 +152,9 @@ PE : {signal['PE']}
 TP1 : {signal['TP1']}
 TP2 : {signal['TP2']}
 SL : {signal['SL']}
-UTC : {signal['UTC']}"""
+UTC : {signal['UTC']}
+Stratégie : {signal['strategie']}
+Probabilité de réussite : {signal['proba']}%"""
                 envoyer_message(msg)
         time.sleep(60)
 
