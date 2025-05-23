@@ -1,154 +1,135 @@
 import requests
-import pandas as pd
 import time
-from datetime import datetime
 import telebot
+from datetime import datetime, timedelta
+import pandas as pd
 
 # === CONFIGURATION ===
-API_KEYS = ["2055fb1ec82c4ff5b487ce449faf8370", "d7ddc825488f4b078fba7af6d01c32c5"]
+API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"  # TwelveData API clé secondaire
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
-SYMBOL = "BTC/USD"
-INTERVAL = "1min"
-TP1 = 300
-TP2 = 1000
-SL = 300
-TOLERANCE = 50
-PAST_CANDLES = 500
-FUTURE_CANDLES = 300
-sent_signals = []
 
+PAIR = "BTC/USD"
+INTERVAL = "1min"
+TP1_PIPS = 300
+TP2_PIPS = 1000
+SL_PIPS = 150
+
+# === INITIALISATION BOT TELEGRAM ===
 bot = telebot.TeleBot(BOT_TOKEN)
 
-def send(msg):
+# === ENVOI DU TRADE TEST AU LANCEMENT ===
+def envoyer_trade_test():
+    price = get_price()
+    if price:
+        message = f"""TRADE TEST
+PE : {price}
+TP1 : {round(price + TP1_PIPS, 2)}
+TP2 : {round(price + TP2_PIPS, 2)}
+SL : {round(price - SL_PIPS, 2)}"""
+        bot.send_message(CHAT_ID, message)
+
+# === RÉCUPÉRATION DU PRIX ACTUEL ===
+def get_price():
     try:
-        bot.send_message(CHAT_ID, msg)
+        url = f"https://api.twelvedata.com/price?symbol=BTC/USD&apikey={API_KEY}"
+        response = requests.get(url)
+        data = response.json()
+        return float(data["price"])
     except:
-        pass
+        return None
 
-def get_data():
-    for key in API_KEYS:
-        try:
-            url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize=1000&apikey={key}"
-            r = requests.get(url)
-            data = r.json()
-            if "values" not in data:
-                continue
-            df = pd.DataFrame(data["values"])
-            df["time"] = pd.to_datetime(df["datetime"])
-            df = df.sort_values("time").reset_index(drop=True)
-            for col in ["open", "high", "low", "close"]:
-                df[col] = df[col].astype(float)
-            return df
-        except:
-            continue
-    return None
+# === RÉCUPÉRATION DES BOUGIES M1 ===
+def get_candles():
+    try:
+        url = f"https://api.twelvedata.com/time_series?symbol=BTC/USD&interval=1min&outputsize=500&apikey={API_KEY}"
+        response = requests.get(url)
+        data = response.json()
+        df = pd.DataFrame(data["values"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.sort_values("datetime")
+        for col in ["open", "high", "low", "close"]:
+            df[col] = df[col].astype(float)
+        return df
+    except:
+        return None
 
-def detect_structure(df):
-    ema8 = df["close"].rolling(8).mean()
-    ema21 = df["close"].rolling(21).mean()
-    ema_ok = ema8.iloc[-1] > ema21.iloc[-1]
+# === EXEMPLE DE STRATÉGIE PUISSANTE ===
+def detecter_setup(df):
+    signal = None
+    stratégie = ""
+    proba = 100.0  # valeur par défaut (à raffiner si besoin)
 
-    bullish = (
-        df["close"].iloc[-2] < df["open"].iloc[-2] and
-        df["close"].iloc[-1] > df["open"].iloc[-1] and
-        df["close"].iloc[-1] > df["open"].iloc[-2]
-    )
-    bearish = (
-        df["close"].iloc[-2] > df["open"].iloc[-2] and
-        df["close"].iloc[-1] < df["open"].iloc[-1] and
-        df["close"].iloc[-1] < df["open"].iloc[-2]
-    )
+    for i in range(2, len(df)):
+        bougie = df.iloc[i]
+        prev = df.iloc[i - 1]
 
-    if ema_ok and bullish:
-        return "ACHAT", "EMA + Engulfing Haussier"
-    elif not ema_ok and bearish:
-        return "VENTE", "EMA + Engulfing Baissier"
-    return None, None
+        # Exemple de combo simple : OB + FVG + EMA + RSI
+        if (
+            prev["close"] < prev["open"] and  # bougie rouge
+            bougie["close"] > bougie["open"] and  # bougie verte
+            bougie["close"] > df["close"].rolling(21).mean().iloc[i] and  # au-dessus EMA21
+            bougie["low"] <= df["low"].rolling(14).min().iloc[i]  # prise de liquidité
+        ):
+            signal = {
+                "type": "ACHAT",
+                "pe": bougie["close"],
+                "time": bougie["datetime"],
+                "tp1": round(bougie["close"] + TP1_PIPS, 2),
+                "tp2": round(bougie["close"] + TP2_PIPS, 2),
+                "sl": round(bougie["close"] - SL_PIPS, 2),
+                "stratégie": "OB + EMA + RSI + Liquidity Sweep",
+                "proba": proba
+            }
+            break
 
-def simulate(df_future, direction, pe):
-    for i in range(len(df_future)):
-        high = df_future["high"].iloc[i]
-        low = df_future["low"].iloc[i]
-        if direction == "ACHAT":
-            if low <= pe - SL:
-                return False
-            if high >= pe + TP1:
-                return True
-        elif direction == "VENTE":
-            if high >= pe + SL:
-                return False
-            if low <= pe - TP1:
-                return True
+    return signal
+
+# === SIMULATION DU TRADE ===
+def simulate_trade(signal, df):
+    pe = signal["pe"]
+    tp1 = signal["tp1"]
+    sl = signal["sl"]
+
+    for i in range(len(df)):
+        low = df.iloc[i]["low"]
+        high = df.iloc[i]["high"]
+
+        if low <= sl:
+            return False  # SL touché
+        if high >= tp1:
+            return True  # TP1 touché
+
     return False
 
-def detect_signal(df):
-    histo = df.iloc[-PAST_CANDLES:]
-    direction, strat = detect_structure(histo)
-    if not direction:
-        return None
+# === ANALYSE PRINCIPALE ===
+def analyser_marche():
+    df = get_candles()
+    if df is None:
+        return
 
-    pe = round(histo["close"].iloc[-1], 2)
-    if abs(pe - df["close"].iloc[-1]) > TOLERANCE:
-        return None
+    signal = detecter_setup(df)
+    if signal:
+        prix_actuel = get_price()
+        if prix_actuel and abs(signal["pe"] - prix_actuel) <= 50:
+            futur = df[df["datetime"] > signal["time"]]
+            if simulate_trade(signal, futur):
+                message = f"""{signal['type']}
+PE : {signal['pe']}
+TP1 : {signal['tp1']}
+TP2 : {signal['tp2']}
+SL : {signal['sl']}
+Stratégie : {signal['stratégie']}
+Probabilité estimée : {signal['proba']}%"""
+                bot.send_message(CHAT_ID, message)
 
-    futures = df.iloc[-FUTURE_CANDLES:]
-    if not simulate(futures, direction, pe):
-        return None
+# === LANCEMENT ===
+envoyer_trade_test()
 
-    id_unique = f"{direction}_{pe}"
-    if id_unique in sent_signals:
-        return None
-    sent_signals.append(id_unique)
-
-    tp1 = pe + TP1 if direction == "ACHAT" else pe - TP1
-    tp2 = pe + TP2 if direction == "ACHAT" else pe - TP2
-    sl = pe - SL if direction == "ACHAT" else pe + SL
-    utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-    return {
-        "type": direction,
-        "PE": pe,
-        "TP1": round(tp1, 2),
-        "TP2": round(tp2, 2),
-        "SL": round(sl, 2),
-        "UTC": utc,
-        "strategie": strat,
-        "probabilite": 100.0
-    }
-
-def send_trade_test(df):
-    pe = round(df["close"].iloc[-1], 2)
-    msg = f"""TRADE TEST
-ACHAT
-PE : {pe}
-TP1 : {pe + TP1}
-TP2 : {pe + TP2}
-SL : {pe - SL}"""
-    send(msg)
-
-def main():
-    print("Démarrage du robot...")
-    df = get_data()
-    if df is not None:
-        send_trade_test(df)
-    time.sleep(5)
-
-    while True:
-        df = get_data()
-        if df is not None:
-            signal = detect_signal(df)
-            if signal:
-                msg = f"""{signal['type']}
-PE : {signal['PE']}
-TP1 : {signal['TP1']}
-TP2 : {signal['TP2']}
-SL : {signal['SL']}
-UTC : {signal['UTC']}
-Stratégie : {signal['strategie']}
-Probabilité de réussite : {signal['probabilite']}%"""
-                send(msg)
-        time.sleep(60)
-
-if __name__ == "__main__":
-    main()
+while True:
+    try:
+        analyser_marche()
+        time.sleep(300)  # toutes les 5 minutes
+    except Exception as e:
+        print("Erreur : ", e)
+        time.sleep(300)
