@@ -5,10 +5,7 @@ from datetime import datetime
 import telebot
 
 # === CONFIGURATION ===
-API_KEYS = [
-    "2055fb1ec82c4ff5b487ce449faf8370",
-    "d7ddc825488f4b078fba7af6d01c32c5"
-]
+API_KEYS = ["2055fb1ec82c4ff5b487ce449faf8370", "d7ddc825488f4b078fba7af6d01c32c5"]
 BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
 SYMBOL = "BTC/USD"
@@ -19,15 +16,15 @@ SL = 300
 TOLERANCE = 50
 PAST_CANDLES = 500
 FUTURE_CANDLES = 300
+sent_signals = []
 
 bot = telebot.TeleBot(BOT_TOKEN)
-derniers_signaux = []
 
-def envoyer_message(msg):
+def send(msg):
     try:
         bot.send_message(CHAT_ID, msg)
-    except Exception as e:
-        print("Erreur message :", e)
+    except:
+        pass
 
 def get_data():
     for key in API_KEYS:
@@ -47,7 +44,7 @@ def get_data():
             continue
     return None
 
-def strategie_combinee(df):
+def detect_structure(df):
     ema8 = df["close"].rolling(8).mean()
     ema21 = df["close"].rolling(21).mean()
     ema_ok = ema8.iloc[-1] > ema21.iloc[-1]
@@ -64,49 +61,50 @@ def strategie_combinee(df):
     )
 
     if ema_ok and bullish:
-        return "ACHAT", "EMA 8/21 + Engulfing haussier"
+        return "ACHAT", "EMA + Engulfing Haussier"
     elif not ema_ok and bearish:
-        return "VENTE", "EMA 8/21 + Engulfing baissier"
+        return "VENTE", "EMA + Engulfing Baissier"
     return None, None
 
-def simulation_trade(df_future, direction, pe):
+def simulate(df_future, direction, pe):
     for i in range(len(df_future)):
-        h, l = df_future["high"].iloc[i], df_future["low"].iloc[i]
+        high = df_future["high"].iloc[i]
+        low = df_future["low"].iloc[i]
         if direction == "ACHAT":
-            if l <= pe - SL:
+            if low <= pe - SL:
                 return False
-            if h >= pe + TP1:
+            if high >= pe + TP1:
                 return True
-        if direction == "VENTE":
-            if h >= pe + SL:
+        elif direction == "VENTE":
+            if high >= pe + SL:
                 return False
-            if l <= pe - TP1:
+            if low <= pe - TP1:
                 return True
     return False
 
-def detecter_signal(df):
-    historique = df.iloc[-PAST_CANDLES:]
-    direction, strategie = strategie_combinee(historique)
+def detect_signal(df):
+    histo = df.iloc[-PAST_CANDLES:]
+    direction, strat = detect_structure(histo)
     if not direction:
         return None
 
-    pe = round(historique["close"].iloc[-1], 2)
+    pe = round(histo["close"].iloc[-1], 2)
     if abs(pe - df["close"].iloc[-1]) > TOLERANCE:
         return None
 
     futures = df.iloc[-FUTURE_CANDLES:]
-    if not simulation_trade(futures, direction, pe):
+    if not simulate(futures, direction, pe):
         return None
 
     id_unique = f"{direction}_{pe}"
-    if id_unique in derniers_signaux:
+    if id_unique in sent_signals:
         return None
-    derniers_signaux.append(id_unique)
+    sent_signals.append(id_unique)
 
     tp1 = pe + TP1 if direction == "ACHAT" else pe - TP1
     tp2 = pe + TP2 if direction == "ACHAT" else pe - TP2
     sl = pe - SL if direction == "ACHAT" else pe + SL
-    prob = 100.0
+    utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     return {
         "type": direction,
@@ -114,12 +112,12 @@ def detecter_signal(df):
         "TP1": round(tp1, 2),
         "TP2": round(tp2, 2),
         "SL": round(sl, 2),
-        "UTC": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        "strategie": strategie,
-        "probabilite": prob
+        "UTC": utc,
+        "strategie": strat,
+        "probabilite": 100.0
     }
 
-def envoyer_trade_test(df):
+def send_trade_test(df):
     pe = round(df["close"].iloc[-1], 2)
     msg = f"""TRADE TEST
 ACHAT
@@ -127,19 +125,19 @@ PE : {pe}
 TP1 : {pe + TP1}
 TP2 : {pe + TP2}
 SL : {pe - SL}"""
-    envoyer_message(msg)
+    send(msg)
 
 def main():
-    print("Robot trader lancé.")
+    print("Démarrage du robot...")
     df = get_data()
     if df is not None:
-        envoyer_trade_test(df)
+        send_trade_test(df)
     time.sleep(5)
 
     while True:
         df = get_data()
         if df is not None:
-            signal = detecter_signal(df)
+            signal = detect_signal(df)
             if signal:
                 msg = f"""{signal['type']}
 PE : {signal['PE']}
@@ -149,7 +147,7 @@ SL : {signal['SL']}
 UTC : {signal['UTC']}
 Stratégie : {signal['strategie']}
 Probabilité de réussite : {signal['probabilite']}%"""
-                envoyer_message(msg)
+                send(msg)
         time.sleep(60)
 
 if __name__ == "__main__":
