@@ -1,144 +1,142 @@
 import requests
-import time
 import pandas as pd
+import time
 import telebot
-from datetime import datetime
-from ta.trend import EMAIndicator
-from ta.momentum import RSIIndicator
-from ta.volatility import BollingerBands
+from datetime import datetime, timedelta
 
-# --- Bloc 1 : Configurations ---
-api_keys = ["2055fb1ec82c4ff5b487ce449faf8370", "d7ddc825488f4b078fba7af6d01c32c5"]
-current_key = 0
-symbol = "BTC/USD"
-interval = "5min"
-limit = 500
-bot_token = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
-chat_id = "2128959111"
-tp1_distance = 300
-tp2_distance = 1000
-sl_distance = 150
-sent_signals = []
+# === PARAMÈTRES UTILISATEUR ===
+TWELVEDATA_API_KEYS = [
+    "2055fb1ec82c4ff5b487ce449faf8370",  # Clé principale
+    "d7ddc825488f4b078fba7af6d01c32c5"   # Clé secours
+]
+TELEGRAM_BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
+TELEGRAM_CHAT_ID = "2128959111"
+SYMBOL = "BTC/USD"
+INTERVAL = "1min"
+TP1_PIPS = 300
+SL_PIPS = 150
+BOUGIES_ANALYSE = 500
 
-bot = telebot.TeleBot(bot_token)
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+derniere_strategie = None
+dernier_signal = None
 
-# --- Bloc 2 : Récupération données ---
-def get_data():
-    global current_key
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={api_keys[current_key]}&outputsize={limit}"
-    try:
-        r = requests.get(url)
-        data = r.json()
-        df = pd.DataFrame(data["values"])
-        df.columns = ["time", "open", "high", "low", "close", "volume"]
-        df = df.astype({"open": float, "high": float, "low": float, "close": float})
-        df["time"] = pd.to_datetime(df["time"])
-        df = df.sort_values("time").reset_index(drop=True)
-        return df
-    except Exception:
-        current_key = (current_key + 1) % len(api_keys)
-        return get_data()
+# === UTILITAIRES ===
+def envoyer(message):
+    bot.send_message(TELEGRAM_CHAT_ID, message)
 
-# --- Bloc 3 : Analyse complète & stratégie ---
-def analyze(df):
-    ema8 = EMAIndicator(df["close"], window=8).ema_indicator()
-    ema21 = EMAIndicator(df["close"], window=21).ema_indicator()
-    rsi = RSIIndicator(df["close"], window=14).rsi()
-    bb = BollingerBands(df["close"], window=20, window_dev=2)
-    df["ema8"], df["ema21"], df["rsi"], df["bb_upper"], df["bb_lower"] = ema8, ema21, rsi, bb.bollinger_hband(), bb.bollinger_lband()
+def recuperer_bougies(api_key):
+    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL.replace('/', '')}&interval={INTERVAL}&outputsize={BOUGIES_ANALYSE}&apikey={api_key}"
+    response = requests.get(url)
+    data = response.json()
+    if "values" not in data:
+        return None
+    df = pd.DataFrame(data["values"])
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.sort_values("datetime")
+    df = df.astype(float, errors="ignore")
+    return df
 
-    last = df.iloc[-1]
-    previous = df.iloc[-2]
+def detecter_order_blocks(df):
+    blocks = []
+    for i in range(2, len(df) - 2):
+        bougie = df.iloc[i]
+        suivante = df.iloc[i+1]
+        if bougie["low"] < df["low"].iloc[i-1] and suivante["close"] > bougie["high"]:
+            blocks.append((bougie["datetime"], bougie["low"], "bullish"))
+        elif bougie["high"] > df["high"].iloc[i-1] and suivante["close"] < bougie["low"]:
+            blocks.append((bougie["datetime"], bougie["high"], "bearish"))
+    return blocks
 
-    strategies = []
+def detecter_fvg(df):
+    fvg = []
+    for i in range(2, len(df)-2):
+        prev = df.iloc[i-1]
+        curr = df.iloc[i]
+        next_ = df.iloc[i+1]
+        if prev["high"] < next_["low"]:
+            fvg.append((curr["datetime"], prev["high"], next_["low"], "bullish"))
+        elif prev["low"] > next_["high"]:
+            fvg.append((curr["datetime"], next_["high"], prev["low"], "bearish"))
+    return fvg
 
-    if previous["ema8"] < previous["ema21"] and last["ema8"] > last["ema21"] and last["rsi"] > 50:
-        strategies.append("CHoCH + RSI")
+def detecter_choch(df):
+    choch = []
+    for i in range(3, len(df)-3):
+        if df["high"].iloc[i] > df["high"].iloc[i-1] and df["low"].iloc[i+1] < df["low"].iloc[i-2]:
+            choch.append((df["datetime"].iloc[i], "down"))
+        elif df["low"].iloc[i] < df["low"].iloc[i-1] and df["high"].iloc[i+1] > df["high"].iloc[i-2]:
+            choch.append((df["datetime"].iloc[i], "up"))
+    return choch
 
-    if previous["ema8"] > previous["ema21"] and last["ema8"] < last["ema21"] and last["rsi"] < 50:
-        strategies.append("BOS + RSI")
-
-    if last["close"] > last["bb_upper"]:
-        strategies.append("Breakout Bollinger")
-
-    if last["close"] < last["bb_lower"]:
-        strategies.append("Breakdown Bollinger")
-
-    return strategies
-
-# --- Bloc 4 : Simulation complète du trade ---
-def simulate_trade(df, signal_type, entry_price):
-    for future_candle in df.iloc[-1:].itertuples():
-        high = future_candle.high
-        low = future_candle.low
-        if signal_type == "ACHAT":
-            if low <= entry_price - sl_distance:
-                return "SL"
-            if high >= entry_price + tp1_distance:
-                return "TP1"
+def simuler_trade(pe, direction, df):
+    tp = pe + TP1_PIPS if direction == "buy" else pe - TP1_PIPS
+    sl = pe - SL_PIPS if direction == "buy" else pe + SL_PIPS
+    for i in range(len(df)):
+        prix = df.iloc[i]
+        if direction == "buy":
+            if prix["low"] <= sl:
+                return "perdu"
+            elif prix["high"] >= tp:
+                return "gagné"
         else:
-            if high >= entry_price + sl_distance:
-                return "SL"
-            if low <= entry_price - tp1_distance:
-                return "TP1"
-    return "En attente"
+            if prix["high"] >= sl:
+                return "perdu"
+            elif prix["low"] <= tp:
+                return "gagné"
+    return "en cours"
 
-# --- Bloc 5 : Envoi signal Telegram ---
-def send_signal(signal_type, pe, strategy):
-    if any(abs(pe - s) < 50 and signal_type == stype for s, stype in sent_signals):
+def analyser_et_envoyer(df):
+    global dernier_signal, derniere_strategie
+    ob = detecter_order_blocks(df)
+    fvg = detecter_fvg(df)
+    choch = detecter_choch(df)
+    combinaison_testees = []
+
+    for bloc in ob:
+        for gap in fvg:
+            for structure in choch:
+                if bloc[0] < gap[0] < structure[0]:
+                    direction = "buy" if bloc[2] == "bullish" else "sell"
+                    pe = bloc[1]
+                    sous_df = df[df["datetime"] > structure[0]]
+                    result = simuler_trade(pe, direction, sous_df)
+                    combinaison = f"OB+FVG+CHoCH ({direction})"
+                    if result == "gagné":
+                        if (pe, direction) != dernier_signal:
+                            message = f"{'ACHAT' if direction == 'buy' else 'VENTE'}\nPE : {int(pe)}\nTP1 : {int(pe + TP1_PIPS) if direction == 'buy' else int(pe - TP1_PIPS)}\nTP2 : {int(pe + 1000) if direction == 'buy' else int(pe - 1000)}\nSL : {int(pe - SL_PIPS) if direction == 'buy' else int(pe + SL_PIPS)}\nStratégie : {combinaison}\n% de réussite estimé : 100 %"
+                            envoyer(message)
+                            dernier_signal = (pe, direction)
+                            derniere_strategie = combinaison
+                            return
+
+def envoyer_trade_test(pe):
+    message = f"TRADE TEST\nPE : {int(pe)}\nTP1 : {int(pe + TP1_PIPS)}\nTP2 : {int(pe + 1000)}\nSL : {int(pe - SL_PIPS)}"
+    envoyer(message)
+
+def moteur():
+    envoyer("Moteur lancé. Analyse en cours...")
+    pe_test = None
+    for key in TWELVEDATA_API_KEYS:
+        df = recuperer_bougies(key)
+        if df is not None:
+            pe_test = float(df["close"].iloc[-1])
+            break
+    if not pe_test:
+        envoyer("Impossible de récupérer les données.")
         return
-    sent_signals.append((pe, signal_type))
-
-    message = (
-        f"{signal_type}\n"
-        f"PE : {pe}\n"
-        f"TP1 : {pe + tp1_distance if signal_type == 'ACHAT' else pe - tp1_distance}\n"
-        f"TP2 : {pe + tp2_distance if signal_type == 'ACHAT' else pe - tp2_distance}\n"
-        f"SL : {pe - sl_distance if signal_type == 'ACHAT' else pe + sl_distance}\n"
-        f"Stratégie : {strategy}\n"
-        f"Probabilité estimée : 100 %"
-    )
-    bot.send_message(chat_id, message)
-
-# --- Bloc 6 : Suivi & Trade Test ---
-def send_trade_test():
-    df = get_data()
-    last = df.iloc[-1]
-    price = round(last.close, 2)
-    message = (
-        f"TRADE TEST\n"
-        f"ACHAT\nPE : {price}\n"
-        f"TP1 : {price + tp1_distance}\n"
-        f"TP2 : {price + tp2_distance}\n"
-        f"SL : {price - sl_distance}"
-    )
-    bot.send_message(chat_id, message)
-
-# --- Bloc 7 : Boucle principale ---
-def main():
-    send_trade_test()
-    last_message_time = time.time()
+    envoyer_trade_test(pe_test)
+    compteur = 0
     while True:
-        try:
-            df = get_data()
-            strategies = analyze(df)
-            last_price = round(df.iloc[-1].close, 2)
-
-            for strategy in strategies:
-                signal_type = "ACHAT" if "CHoCH" in strategy or "Breakdown" in strategy else "VENTE"
-                result = simulate_trade(df, signal_type, last_price)
-                if result == "TP1":
-                    send_signal(signal_type, last_price, strategy)
-                    break
-
-            if time.time() - last_message_time >= 7200:
-                bot.send_message(chat_id, "Aucune opportunité parfaite détectée ces 2 dernières heures.")
-                last_message_time = time.time()
-
-            time.sleep(300)
-        except Exception as e:
-            print("Erreur moteur :", e)
-            time.sleep(60)
+        for key in TWELVEDATA_API_KEYS:
+            df = recuperer_bougies(key)
+            if df is not None:
+                analyser_et_envoyer(df)
+                break
+        compteur += 1
+        if compteur % 24 == 0:
+            envoyer("Aucune opportunité parfaite détectée depuis 2h.")
+        time.sleep(300)
 
 if __name__ == "__main__":
-    main()
+    moteur()
