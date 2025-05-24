@@ -1,135 +1,165 @@
 import requests
 import time
 import telebot
-from datetime import datetime, timedelta
-import pandas as pd
+import datetime
+import statistics
 
 # === CONFIGURATION ===
-API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"  # TwelveData API clé secondaire
-BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
+API_KEY = "2055fb1ec82c4ff5b487ce449faf8370"
+TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 CHAT_ID = "2128959111"
-
-PAIR = "BTC/USD"
+SYMBOL = "BTC/USD"
 INTERVAL = "1min"
 TP1_PIPS = 300
 TP2_PIPS = 1000
 SL_PIPS = 150
+MAX_PIP_DIFF = 50
 
-# === INITIALISATION BOT TELEGRAM ===
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+sent_test = False
+last_sent_trade = None
 
-# === ENVOI DU TRADE TEST AU LANCEMENT ===
-def envoyer_trade_test():
-    price = get_price()
-    if price:
-        message = f"""TRADE TEST
-PE : {price}
-TP1 : {round(price + TP1_PIPS, 2)}
-TP2 : {round(price + TP2_PIPS, 2)}
-SL : {round(price - SL_PIPS, 2)}"""
-        bot.send_message(CHAT_ID, message)
+# === UTILITAIRES ===
 
-# === RÉCUPÉRATION DU PRIX ACTUEL ===
+def send_message(text):
+    try:
+        bot.send_message(CHAT_ID, text)
+    except:
+        pass
+
 def get_price():
-    try:
-        url = f"https://api.twelvedata.com/price?symbol=BTC/USD&apikey={API_KEY}"
-        response = requests.get(url)
-        data = response.json()
-        return float(data["price"])
-    except:
-        return None
+    url = f"https://api.twelvedata.com/price?symbol=BTC/USD&apikey={API_KEY}"
+    r = requests.get(url).json()
+    return float(r["price"]) if "price" in r else None
 
-# === RÉCUPÉRATION DES BOUGIES M1 ===
-def get_candles():
-    try:
-        url = f"https://api.twelvedata.com/time_series?symbol=BTC/USD&interval=1min&outputsize=500&apikey={API_KEY}"
-        response = requests.get(url)
-        data = response.json()
-        df = pd.DataFrame(data["values"])
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        df = df.sort_values("datetime")
-        for col in ["open", "high", "low", "close"]:
-            df[col] = df[col].astype(float)
-        return df
-    except:
-        return None
+def get_candles(n=500):
+    url = f"https://api.twelvedata.com/time_series?symbol=BTC/USD&interval={INTERVAL}&outputsize={n}&apikey={API_KEY}"
+    r = requests.get(url).json()
+    if "values" not in r: return []
+    data = list(reversed(r["values"]))
+    return [{"time": x["datetime"], "open": float(x["open"]), "high": float(x["high"]), "low": float(x["low"]), "close": float(x["close"])} for x in data]
 
-# === EXEMPLE DE STRATÉGIE PUISSANTE ===
-def detecter_setup(df):
-    signal = None
-    stratégie = ""
-    proba = 100.0  # valeur par défaut (à raffiner si besoin)
+def simulate_trade(entry, direction, candles):
+    tp1 = entry + TP1_PIPS if direction == "buy" else entry - TP1_PIPS
+    sl = entry - SL_PIPS if direction == "buy" else entry + SL_PIPS
+    for c in candles:
+        high = c["high"]
+        low = c["low"]
+        if direction == "buy" and low <= sl:
+            return "SL"
+        if direction == "sell" and high >= sl:
+            return "SL"
+        if direction == "buy" and high >= tp1:
+            return "TP1"
+        if direction == "sell" and low <= tp1:
+            return "TP1"
+    return "NONE"
 
-    for i in range(2, len(df)):
-        bougie = df.iloc[i]
-        prev = df.iloc[i - 1]
+def rsi(close, length=14):
+    gains, losses = [], []
+    for i in range(1, length + 1):
+        delta = close[-i] - close[-i - 1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+    avg_gain = statistics.mean(gains)
+    avg_loss = statistics.mean(losses) if statistics.mean(losses) != 0 else 1
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-        # Exemple de combo simple : OB + FVG + EMA + RSI
-        if (
-            prev["close"] < prev["open"] and  # bougie rouge
-            bougie["close"] > bougie["open"] and  # bougie verte
-            bougie["close"] > df["close"].rolling(21).mean().iloc[i] and  # au-dessus EMA21
-            bougie["low"] <= df["low"].rolling(14).min().iloc[i]  # prise de liquidité
-        ):
-            signal = {
-                "type": "ACHAT",
-                "pe": bougie["close"],
-                "time": bougie["datetime"],
-                "tp1": round(bougie["close"] + TP1_PIPS, 2),
-                "tp2": round(bougie["close"] + TP2_PIPS, 2),
-                "sl": round(bougie["close"] - SL_PIPS, 2),
-                "stratégie": "OB + EMA + RSI + Liquidity Sweep",
-                "proba": proba
-            }
-            break
+def ema(data, length):
+    k = 2 / (length + 1)
+    ema_val = data[0]
+    for price in data[1:]:
+        ema_val = price * k + ema_val * (1 - k)
+    return ema_val
 
-    return signal
+# === ANALYSE AVANCÉE ===
 
-# === SIMULATION DU TRADE ===
-def simulate_trade(signal, df):
-    pe = signal["pe"]
-    tp1 = signal["tp1"]
-    sl = signal["sl"]
+def detect_strategies(candles):
+    close = [x["close"] for x in candles]
+    high = [x["high"] for x in candles]
+    low = [x["low"] for x in candles]
+    ema21 = ema(close[-21:], 21)
+    rsi_val = rsi(close)
 
-    for i in range(len(df)):
-        low = df.iloc[i]["low"]
-        high = df.iloc[i]["high"]
+    current = candles[-1]["close"]
+    prev = candles[-2]["close"]
+    ob = candles[-3]["high"] > candles[-2]["high"] and candles[-3]["low"] < candles[-2]["low"]
+    fvg = candles[-2]["low"] > candles[-3]["high"] or candles[-2]["high"] < candles[-3]["low"]
+    bos = candles[-2]["high"] > candles[-3]["high"] and candles[-2]["low"] > candles[-3]["low"]
+    choch = candles[-2]["low"] < candles[-3]["low"] and candles[-2]["high"] < candles[-3]["high"]
 
-        if low <= sl:
-            return False  # SL touché
-        if high >= tp1:
-            return True  # TP1 touché
+    strategies = []
 
-    return False
+    if current > ema21 and rsi_val < 30 and ob and fvg:
+        strategies.append(("buy", "OB + FVG + RSI + EMA"))
 
-# === ANALYSE PRINCIPALE ===
-def analyser_marche():
-    df = get_candles()
-    if df is None:
+    if current < ema21 and rsi_val > 70 and ob and fvg:
+        strategies.append(("sell", "OB + FVG + RSI + EMA"))
+
+    if bos and rsi_val < 40:
+        strategies.append(("buy", "BOS + RSI"))
+
+    if choch and rsi_val > 60:
+        strategies.append(("sell", "CHoCH + RSI"))
+
+    return strategies
+
+def analyze_and_trade():
+    global last_sent_trade
+    candles = get_candles()
+    if len(candles) < 100:
         return
 
-    signal = detecter_setup(df)
-    if signal:
-        prix_actuel = get_price()
-        if prix_actuel and abs(signal["pe"] - prix_actuel) <= 50:
-            futur = df[df["datetime"] > signal["time"]]
-            if simulate_trade(signal, futur):
-                message = f"""{signal['type']}
-PE : {signal['pe']}
-TP1 : {signal['tp1']}
-TP2 : {signal['tp2']}
-SL : {signal['sl']}
-Stratégie : {signal['stratégie']}
-Probabilité estimée : {signal['proba']}%"""
-                bot.send_message(CHAT_ID, message)
+    strategies = detect_strategies(candles)
+    price_now = get_price()
+    if price_now is None: return
 
-# === LANCEMENT ===
-envoyer_trade_test()
+    for direction, strat in strategies:
+        entry = price_now
+        if last_sent_trade and abs(entry - last_sent_trade) < 100:
+            continue  # Évite les doublons
+
+        result = simulate_trade(entry, direction, candles[-200:])
+        if result == "TP1":
+            tp1 = entry + TP1_PIPS if direction == "buy" else entry - TP1_PIPS
+            tp2 = entry + TP2_PIPS if direction == "buy" else entry - TP2_PIPS
+            sl = entry - SL_PIPS if direction == "buy" else entry + SL_PIPS
+            msg = f"""{'ACHAT' if direction == 'buy' else 'VENTE'}
+PE : {round(entry, 1)}
+TP1 : {round(tp1, 1)}
+TP2 : {round(tp2, 1)}
+SL : {round(sl, 1)}
+Stratégie : {strat}
+Probabilité estimée : 100 %"""
+            send_message(msg)
+            last_sent_trade = entry
+            break
+
+# === TRADE TEST AU DÉMARRAGE ===
+
+def send_trade_test():
+    price = get_price()
+    if price is None:
+        return
+    tp1 = price + TP1_PIPS
+    tp2 = price + TP2_PIPS
+    sl = price - SL_PIPS
+    msg = f"""TRADE TEST
+PE : {round(price, 1)}
+TP1 : {round(tp1, 1)}
+TP2 : {round(tp2, 1)}
+SL : {round(sl, 1)}"""
+    send_message(msg)
+
+# === BOUCLE PRINCIPALE ===
 
 while True:
     try:
-        analyser_marche()
-        time.sleep(300)  # toutes les 5 minutes
-    except Exception as e:
-        print("Erreur : ", e)
+        if not sent_test:
+            send_trade_test()
+            sent_test = True
+        analyze_and_trade()
         time.sleep(300)
+    except Exception as e:
+        time.sleep(10)
