@@ -13,15 +13,16 @@ interval = "5min"
 
 trades_envoyes = []
 combinaisons_gagnantes = set()
+patterns_recents = []
 
 # === Données ===
 def get_btc_price():
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY_PRINCIPALE}&format=JSON&outputsize=500"
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY_PRINCIPALE}&format=JSON&outputsize=1000"
     response = requests.get(url)
     data = response.json()
     if "values" in data:
         return data["values"]
-    url_secours = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY_SECOURS}&format=JSON&outputsize=500"
+    url_secours = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY_SECOURS}&format=JSON&outputsize=1000"
     response = requests.get(url_secours)
     return response.json().get("values", [])
 
@@ -62,7 +63,7 @@ def strategie_parfaite(bougies):
     rsi = calculate_rsi(closes[:15])
 
     trend_up = ema8 > ema21
-    momentum_ok = rsi > 50
+    momentum_ok = rsi > 52
 
     choch = highs[1] > highs[2] and lows[0] < lows[1]
     bos = lows[1] < lows[2] and highs[0] > highs[1]
@@ -71,12 +72,20 @@ def strategie_parfaite(bougies):
     fibo_reject = lows[0] > (lows[2] + 0.618 * (highs[2] - lows[2]))
     compression = max(highs[:5]) - min(lows[:5]) < 0.005 * closes[0]
     sfp = highs[0] > highs[1] and closes[0] < highs[1]
+    volatilite = max(highs[:20]) - min(lows[:20])
 
     combinaison = "CHoCH + BOS + OB + FVG + Fibo + EMA + RSI + Compression + SFP"
 
-    if trend_up and momentum_ok and choch and bos and ob and fvg and fibo_reject and compression and sfp:
+    contexte_favorable = momentum_ok and compression and (0.002 < volatilite < 0.04)
+    pattern_recent = combinaison in patterns_recents
+
+    if trend_up and choch and bos and ob and fvg and fibo_reject and sfp and contexte_favorable:
         if combinaison not in combinaisons_gagnantes:
             combinaisons_gagnantes.add(combinaison)
+        if combinaison not in patterns_recents:
+            patterns_recents.append(combinaison)
+            if len(patterns_recents) > 10:
+                patterns_recents.pop(0)
         return True, combinaison, 100
 
     return False, None, 0
@@ -107,20 +116,23 @@ if __name__ == "__main__":
             SL = round(PE - 150 / 10000, 2)
             prix_actuel = PE
 
-            if abs(prix_actuel - PE) <= 0.5:
+            volatilite_locale = max([float(c['high']) - float(c['low']) for c in bougies[:10]])
+            tol = max(0.5, round(volatilite_locale * 0.6, 2))
+
+            if abs(prix_actuel - PE) <= tol:
                 heure = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
                 msg = f"🚨 SIGNAL BTCUSD M5 🚨\nACHAT\nPE : {PE}\nTP1 : {TP1}\nTP2 : {TP2}\nSL : {SL}\nStratégie : {strat}\nRéussite estimée : {proba}%\nHeure : {heure}"
                 send_telegram(msg)
-                trades_envoyes.append({"PE": PE, "TP1": TP1, "SL": SL})
+                trades_envoyes.append({"PE": PE, "TP1": TP1, "SL": SL, "strategie": strat})
 
         for trade in trades_envoyes[:]:
             prix_actuel = float(bougies[0]['close'])
             if prix_actuel >= trade['TP1']:
-                send_telegram(f"✅ TP1 atteint pour le trade PE : {trade['PE']}")
+                send_telegram(f"✅ TP1 atteint pour le trade PE : {trade['PE']}\nStratégie : {trade['strategie']}")
                 trades_envoyes.remove(trade)
             elif prix_actuel <= trade['SL']:
-                send_telegram(f"❌ SL touché pour le trade PE : {trade['PE']} (Anomalie)\nStratégie suspendue.")
+                send_telegram(f"❌ SL touché pour le trade PE : {trade['PE']}\nStratégie suspendue : {trade['strategie']}")
                 trades_envoyes.remove(trade)
-                combinaisons_gagnantes.discard(strat)
+                combinaisons_gagnantes.discard(trade['strategie'])
 
         time.sleep(300)
