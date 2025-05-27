@@ -75,11 +75,10 @@ def strategie_parfaite(bougies):
     volatilite = max(highs[:20]) - min(lows[:20])
 
     combinaison = "CHoCH + BOS + OB + FVG + Fibo + EMA + RSI + Compression + SFP"
-
-    contexte_favorable = momentum_ok and compression and (0.002 < volatilite < 0.04)
+    contexte_favorable = momentum_ok and compression and (0.001 < volatilite < 0.06)
     pattern_recent = combinaison in patterns_recents
 
-    if trend_up and choch and bos and ob and fvg and fibo_reject and sfp and contexte_favorable:
+    if ob and fibo_reject and contexte_favorable:
         if combinaison not in combinaisons_gagnantes:
             combinaisons_gagnantes.add(combinaison)
         if combinaison not in patterns_recents:
@@ -87,6 +86,15 @@ def strategie_parfaite(bougies):
             if len(patterns_recents) > 10:
                 patterns_recents.pop(0)
         return True, combinaison, 100
+
+    if fvg and sfp and contexte_favorable:
+        return True, "FVG + SFP + contexte IA", 100
+
+    if compression and sfp and contexte_favorable:
+        return True, "Compression + SFP", 100
+
+    if ob and choch and contexte_favorable:
+        return True, "OB + CHoCH + Contexte IA", 100
 
     return False, None, 0
 
