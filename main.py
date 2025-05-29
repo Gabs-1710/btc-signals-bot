@@ -1,6 +1,6 @@
 import requests
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Configuration
 API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
@@ -24,41 +24,39 @@ def send_telegram_message(message):
     try:
         requests.post(url, data=payload)
     except Exception as e:
-        print(f"Erreur envoi Telegram : {e}")
+        print(f"Erreur Telegram : {e}")
 
 def get_candles():
-    url = f"https://api.twelvedata.com/time_series?symbol=BTC/USD&interval=5min&outputsize={MAX_LOOKAHEAD}&apikey={API_KEY}"
+    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={MAX_LOOKAHEAD}&apikey={API_KEY}"
     try:
-        r = requests.get(url)
-        data = r.json()
+        response = requests.get(url)
+        data = response.json()
         candles = data["values"]
         candles.reverse()
         return candles
     except Exception as e:
-        print("Erreur récupération bougies :", e)
+        print("Erreur données :", e)
         return []
 
-def simulate_trade(entry_price, future_prices):
-    sl_price = entry_price - SL_PIPS
-    tp1_price = entry_price + TP1_PIPS
+def simulate_trade(entry, future):
+    sl = entry - SL_PIPS
+    tp1 = entry + TP1_PIPS
+    for candle in future:
+        low = float(candle["low"])
+        high = float(candle["high"])
+        if low <= sl:
+            return False  # SL touché d’abord → trade rejeté
+        if high >= tp1:
+            return True   # TP1 atteint avant SL → trade validé
+    return False  # Ni TP1 ni SL → rejet
 
-    for price in future_prices:
-        high = float(price["high"])
-        low = float(price["low"])
-        if low <= sl_price:
-            return False
-        if high >= tp1_price:
-            return True
-    return False
-
-def detect_perfect_trade():
+def detect_trade():
     candles = get_candles()
     if not candles or len(candles) < 100:
         return
 
     last_close = float(candles[-1]["close"])
     timestamp = candles[-1]["datetime"]
-
     strategies = [
         "Order Block + RSI + EMA",
         "FVG + BOS + EMA",
@@ -72,27 +70,30 @@ def detect_perfect_trade():
         if abs(entry - last_close) <= TOLERANCE:
             future = candles[i+1:]
             if simulate_trade(entry, future):
-                strategy_used = strategies[i % len(strategies)]
-                message = (
+                strat = strategies[i % len(strategies)]
+                tp1 = entry + TP1_PIPS
+                tp2 = entry + TP2_PIPS
+                sl = entry - SL_PIPS
+                msg = (
                     "✅ <b>TRADE PARFAIT DÉTECTÉ</b>\n\n"
                     f"📈 <b>ACHAT</b>\n"
                     f"PE : {entry}\n"
-                    f"TP1 : {entry + TP1_PIPS}\n"
-                    f"TP2 : {entry + TP2_PIPS}\n"
-                    f"SL : {entry - SL_PIPS}\n\n"
-                    f"📚 Stratégie utilisée : <i>{strategy_used}</i>\n"
+                    f"TP1 : {tp1}\n"
+                    f"TP2 : {tp2}\n"
+                    f"SL : {sl}\n\n"
+                    f"📚 Stratégie utilisée : <i>{strat}</i>\n"
                     f"🔐 Taux de confiance : <b>100 %</b>\n"
                     f"🕒 Heure : {timestamp} UTC"
                 )
-                send_telegram_message(message)
+                send_telegram_message(msg)
                 return
 
 def main():
-    send_telegram_message("🧠 Trade test simulé lancé.\nAnalyse en cours...")
-    detect_perfect_trade()
+    send_telegram_message("🧠 Trade test simulé lancé.\nAnalyse ultra stricte activée...")
+    detect_trade()
     while True:
         time.sleep(300)
-        detect_perfect_trade()
+        detect_trade()
 
 if __name__ == "__main__":
     main()
