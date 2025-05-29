@@ -64,7 +64,7 @@ def detect_perfect_trade():
         "FVG + BOS + EMA",
         "CHoCH + OB + Compression",
         "SFP + EMA M15 + Wyckoff",
-        "Fibonacci + RSI + OB",
+        "Fibonacci + RSI + OB"
     ]
 
     for i in range(len(candles) - 60):
@@ -73,32 +73,22 @@ def detect_perfect_trade():
             future = candles[i+1:]
             if simulate_trade(entry, future):
                 strategy_used = strategies[i % len(strategies)]
-                send_telegram_message(
-                    f"✅ <b>TRADE PARFAIT DÉTECTÉ</b>
-
-"
-                    f"📈 <b>ACHAT</b>
-"
-                    f"PE : {entry}
-"
-                    f"TP1 : {entry + TP1_PIPS}
-"
-                    f"TP2 : {entry + TP2_PIPS}
-"
-                    f"SL : {entry - SL_PIPS}
-
-"
-                    f"📚 Stratégie utilisée : <i>{strategy_used}</i>
-"
-                    f"🔐 Taux de confiance : <b>100 %</b>
-"
+                message = (
+                    "✅ <b>TRADE PARFAIT DÉTECTÉ</b>\n\n"
+                    f"📈 <b>ACHAT</b>\n"
+                    f"PE : {entry}\n"
+                    f"TP1 : {entry + TP1_PIPS}\n"
+                    f"TP2 : {entry + TP2_PIPS}\n"
+                    f"SL : {entry - SL_PIPS}\n\n"
+                    f"📚 Stratégie utilisée : <i>{strategy_used}</i>\n"
+                    f"🔐 Taux de confiance : <b>100 %</b>\n"
                     f"🕒 Heure : {timestamp} UTC"
                 )
+                send_telegram_message(message)
                 return
 
 def main():
-    send_telegram_message("🧠 Trade test simulé lancé.
-Analyse en cours...")
+    send_telegram_message("🧠 Trade test simulé lancé.\nAnalyse en cours...")
     detect_perfect_trade()
     while True:
         time.sleep(300)
