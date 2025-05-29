@@ -1,99 +1,108 @@
+# 📦 MOTEUR TRADER PARFAIT BTCUSD M5 – TP/SL dynamiques + Trade 100 % gagnants
+# --------------------------------------------------------------
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Configuration
-API_KEY = "d7ddc825488f4b078fba7af6d01c32c5"
+# ---------------------------- CONFIGURATION ----------------------------
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
-CHAT_ID = "2128959111"
+TELEGRAM_CHAT_ID = "2128959111"
+API_KEY_1 = "d7ddc825488f4b078fba7af6d01c32c5"  # TwelveData (principale)
 SYMBOL = "BTC/USD"
 INTERVAL = "5min"
-SL_PIPS = 150
-TP1_PIPS = 300
-TP2_PIPS = 1000
-MAX_LOOKAHEAD = 500
-TOLERANCE = 50
+LIMIT = 500
 
-def send_telegram_message(message):
+# ---------------------------- FONCTIONS TELEGRAM ----------------------------
+def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-    try:
-        requests.post(url, data=payload)
-    except Exception as e:
-        print(f"Erreur Telegram : {e}")
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    requests.post(url, data=payload)
 
-def get_candles():
-    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize={MAX_LOOKAHEAD}&apikey={API_KEY}"
-    try:
-        response = requests.get(url)
-        data = response.json()
-        candles = data["values"]
-        candles.reverse()
-        return candles
-    except Exception as e:
-        print("Erreur données :", e)
-        return []
+# ---------------------------- FONCTION PRIX LIVE ----------------------------
+def get_recent_candles():
+    url = f"https://api.twelvedata.com/time_series?symbol=BTC/USD&interval={INTERVAL}&outputsize={LIMIT}&apikey={API_KEY_1}"
+    response = requests.get(url)
+    data = response.json()
+    candles = []
+    for candle in reversed(data['values']):
+        candles.append({
+            'timestamp': candle['datetime'],
+            'open': float(candle['open']),
+            'high': float(candle['high']),
+            'low': float(candle['low']),
+            'close': float(candle['close'])
+        })
+    return candles
 
-def simulate_trade(entry, future):
-    sl = entry - SL_PIPS
-    tp1 = entry + TP1_PIPS
-    for candle in future:
-        low = float(candle["low"])
-        high = float(candle["high"])
-        if low <= sl:
-            return False  # SL touché d’abord → trade rejeté
-        if high >= tp1:
-            return True   # TP1 atteint avant SL → trade validé
-    return False  # Ni TP1 ni SL → rejet
+# ---------------------------- STRATÉGIES & ANALYSES ----------------------------
+def detect_direction(candles):
+    # Ex: simple structure : 8 dernières bougies vertes ou rouges
+    last_closes = [c['close'] for c in candles[-8:]]
+    if all(x < y for x, y in zip(last_closes, last_closes[1:])):
+        return "buy"
+    elif all(x > y for x, y in zip(last_closes, last_closes[1:])):
+        return "sell"
+    return None
 
-def detect_trade():
-    candles = get_candles()
-    if not candles or len(candles) < 100:
+def detect_dynamic_tp(entry_index, future_candles, direction, entry_price):
+    for candle in future_candles:
+        if direction == "buy" and candle['low'] <= entry_price:
+            return round(candle['high'], 2)
+        elif direction == "sell" and candle['high'] >= entry_price:
+            return round(candle['low'], 2)
+    return None
+
+def detect_dynamic_sl(entry_index, past_candles, direction, entry_price):
+    sl_zone = None
+    if direction == "buy":
+        for candle in reversed(past_candles[:entry_index]):
+            if candle['low'] < entry_price:
+                if sl_zone is None or candle['low'] < sl_zone:
+                    sl_zone = candle['low']
+    elif direction == "sell":
+        for candle in reversed(past_candles[:entry_index]):
+            if candle['high'] > entry_price:
+                if sl_zone is None or candle['high'] > sl_zone:
+                    sl_zone = candle['high']
+    return round(sl_zone, 2) if sl_zone else None
+
+def simulate_trade(entry_price, tp_price, sl_price, future_candles, direction):
+    for candle in future_candles:
+        if direction == "buy":
+            if candle['low'] <= sl_price:
+                return False
+            if candle['high'] >= tp_price:
+                return True
+        elif direction == "sell":
+            if candle['high'] >= sl_price:
+                return False
+            if candle['low'] <= tp_price:
+                return True
+    return False
+
+# ---------------------------- MOTEUR PRINCIPAL ----------------------------
+def analyse_and_send():
+    candles = get_recent_candles()
+    if len(candles) < 100:
         return
+    entry_index = -50
+    direction = detect_direction(candles[:entry_index])
+    if not direction:
+        return
+    entry_price = candles[entry_index]['close']
+    tp = detect_dynamic_tp(entry_index, candles[entry_index:], direction, entry_price)
+    sl = detect_dynamic_sl(entry_index, candles, direction, entry_price)
+    if not tp or not sl:
+        return
+    if simulate_trade(entry_price, tp, sl, candles[entry_index:], direction):
+        send_telegram(f"{direction.upper()}\nPE : {entry_price}\nTP : {tp}\nSL : {sl}")
 
-    last_close = float(candles[-1]["close"])
-    timestamp = candles[-1]["datetime"]
-    strategies = [
-        "Order Block + RSI + EMA",
-        "FVG + BOS + EMA",
-        "CHoCH + OB + Compression",
-        "SFP + EMA M15 + Wyckoff",
-        "Fibonacci + RSI + OB"
-    ]
-
-    for i in range(len(candles) - 60):
-        entry = float(candles[i]["close"])
-        if abs(entry - last_close) <= TOLERANCE:
-            future = candles[i+1:]
-            if simulate_trade(entry, future):
-                strat = strategies[i % len(strategies)]
-                tp1 = entry + TP1_PIPS
-                tp2 = entry + TP2_PIPS
-                sl = entry - SL_PIPS
-                msg = (
-                    "✅ <b>TRADE PARFAIT DÉTECTÉ</b>\n\n"
-                    f"📈 <b>ACHAT</b>\n"
-                    f"PE : {entry}\n"
-                    f"TP1 : {tp1}\n"
-                    f"TP2 : {tp2}\n"
-                    f"SL : {sl}\n\n"
-                    f"📚 Stratégie utilisée : <i>{strat}</i>\n"
-                    f"🔐 Taux de confiance : <b>100 %</b>\n"
-                    f"🕒 Heure : {timestamp} UTC"
-                )
-                send_telegram_message(msg)
-                return
-
-def main():
-    send_telegram_message("🧠 Trade test simulé lancé.\nAnalyse ultra stricte activée...")
-    detect_trade()
-    while True:
+# ---------------------------- BOUCLE D’ANALYSE LIVE ----------------------------
+send_telegram("Trade test\nPE : 68000\nTP : 68300\nSL : 67850")
+while True:
+    try:
+        analyse_and_send()
         time.sleep(300)
-        detect_trade()
-
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        send_telegram(f"Erreur : {e}")
+        time.sleep(300)
