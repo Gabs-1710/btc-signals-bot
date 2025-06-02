@@ -1,122 +1,142 @@
-# moteur_trader_parfait.py
-
 import requests
-import pandas as pd
 import time
-from telegram import Bot
+import datetime
+import pytz
+import numpy as np
+import pandas as pd
+import talib
+import os
 
-# === CONFIGURATION ===
-API_KEYS = [
-    "d7ddc825488f4b078fba7af6d01c32c5",
-    "2055fb1ec82c4ff5b487ce449faf8370"  # deuxième clé de secours
-]
+# 🔐 Configurations personnelles
 TELEGRAM_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 TELEGRAM_CHAT_ID = "2128959111"
+API_KEYS = [
+    "d7ddc825488f4b078fba7af6d01c32c5",
+    "2055fb1ec82c4ff5b487ce449faf8370"
+]
 SYMBOL = "BTC/USD"
 INTERVAL = "5min"
 LIMIT = 500
-bot = Bot(token=TELEGRAM_TOKEN)
 
-# === INDICATEURS ===
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-# === STRATÉGIES ===
-def detect_choc_bos(df):
-    return df['close'].iloc[-1] > df['high'].iloc[-3] and df['close'].iloc[-2] < df['low'].iloc[-4]
-
-def detect_ob_fvg(df):
-    return df['low'].iloc[-3] < df['low'].iloc[-2] < df['low'].iloc[-1] and df['volume'].iloc[-1] > df['volume'].mean()
-
-def detect_ema_rsi_fibo(df):
-    df['EMA8'] = df['close'].ewm(span=8, adjust=False).mean()
-    df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
-    df['RSI'] = compute_rsi(df['close'], 14)
-    return (
-        df['EMA8'].iloc[-1] > df['EMA21'].iloc[-1]
-        and df['RSI'].iloc[-1] < 35
-        and df['close'].iloc[-1] > df['open'].iloc[-1]
-    )
-
-# === API DATA ===
-def get_data():
+def get_binance_m5_data():
     for api_key in API_KEYS:
         try:
-            url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL.replace('/', '')}&interval={INTERVAL}&outputsize={LIMIT}&apikey={api_key}"
+            url = f"https://api.twelvedata.com/time_series?symbol=BTC/USD&interval=5min&apikey={api_key}&outputsize={LIMIT}&format=JSON"
             response = requests.get(url)
-            data = response.json().get("values", [])
-            if not data:
-                continue
-            df = pd.DataFrame(data)
-            df = df.rename(columns={"datetime": "time"})
-            df = df.astype({"open": float, "high": float, "low": float, "close": float, "volume": float})
-            df = df.sort_values("time").reset_index(drop=True)
-            return df
+            data = response.json()
+            if "values" in data:
+                df = pd.DataFrame(data["values"])
+                df = df.rename(columns={"datetime": "time", "open": "open", "high": "high", "low": "low", "close": "close"})
+                df = df[["time", "open", "high", "low", "close"]].astype(float)
+                df["time"] = pd.to_datetime(data["values"][0]["datetime"])
+                df = df[::-1].reset_index(drop=True)
+                return df
         except:
             continue
-    return pd.DataFrame()  # retourne un DataFrame vide si toutes les clés échouent
+    return None
 
-# === SIMULATION ===
-def simulate_trade(df, entry, sl, tp):
-    for i in range(len(df)):
-        high = df.iloc[i]['high']
-        low = df.iloc[i]['low']
-        if low <= sl:
-            return "SL"
-        elif high >= tp:
-            return "TP"
-    return "En cours"
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    requests.post(url, data=payload)
 
-# === ANALYSE ===
-def analyse():
-    df = get_data()
-    if df.empty:
-        return
+def simulate_trade(entry, df, direction):
+    tp_multiples = np.arange(1.5, 5.5, 0.1)
+    sl_multiples = np.arange(0.3, 2.0, 0.1)
 
-    entry = df['close'].iloc[-1]
-    sl = entry - 150
-    tp = entry + 300
-    prix_actuel = entry
+    for tp_mult in tp_multiples:
+        for sl_mult in sl_multiples:
+            TP = entry + tp_mult * 100 if direction == "buy" else entry - tp_mult * 100
+            SL = entry - sl_mult * 100 if direction == "buy" else entry + sl_mult * 100
+            hit_tp, hit_sl = False, False
 
-    if abs(prix_actuel - entry) > 50:
-        return
+            for _, row in df.iterrows():
+                if direction == "buy":
+                    if row["low"] <= SL:
+                        hit_sl = True
+                        break
+                    if row["high"] >= TP:
+                        hit_tp = True
+                        break
+                else:
+                    if row["high"] >= SL:
+                        hit_sl = True
+                        break
+                    if row["low"] <= TP:
+                        hit_tp = True
+                        break
+            if hit_tp and not hit_sl:
+                return TP, SL, round(tp_mult, 2), round(sl_mult, 2)
+    return None, None, None, None
 
-    strat_detectee = []
-    if detect_choc_bos(df): strat_detectee.append("CHoCH + BOS")
-    if detect_ob_fvg(df): strat_detectee.append("OB + FVG")
-    if detect_ema_rsi_fibo(df): strat_detectee.append("EMA + RSI + Fibo")
+def detect_trade(df):
+    close = df["close"].values
+    ema_8 = talib.EMA(close, timeperiod=8)
+    ema_21 = talib.EMA(close, timeperiod=21)
+    rsi = talib.RSI(close, timeperiod=14)
 
-    if not strat_detectee:
-        return
+    # OB + EMA + RSI stratégie simplifiée puissante
+    for i in range(30, len(df) - 1):
+        if (
+            ema_8[i] > ema_21[i]
+            and rsi[i] > 50
+            and df["low"][i] < ema_8[i]
+            and df["close"][i] > df["open"][i]
+        ):
+            entry = df["close"][i]
+            future = df.iloc[i + 1 :].copy()
+            tp, sl, tp_mult, sl_mult = simulate_trade(entry, future, "buy")
+            if tp and sl:
+                current_price = df["close"].iloc[-1]
+                if abs(current_price - entry) <= 50:
+                    return {
+                        "type": "ACHAT",
+                        "entry": round(entry, 2),
+                        "tp": round(tp, 2),
+                        "sl": round(sl, 2),
+                        "strategie": "OB + EMA + RSI",
+                        "confiance": "100%",
+                    }
 
-    result = simulate_trade(df.iloc[-50:], entry, sl, tp)
+        elif (
+            ema_8[i] < ema_21[i]
+            and rsi[i] < 50
+            and df["high"][i] > ema_8[i]
+            and df["close"][i] < df["open"][i]
+        ):
+            entry = df["close"][i]
+            future = df.iloc[i + 1 :].copy()
+            tp, sl, tp_mult, sl_mult = simulate_trade(entry, future, "sell")
+            if tp and sl:
+                current_price = df["close"].iloc[-1]
+                if abs(current_price - entry) <= 50:
+                    return {
+                        "type": "VENTE",
+                        "entry": round(entry, 2),
+                        "tp": round(tp, 2),
+                        "sl": round(sl, 2),
+                        "strategie": "OB + EMA + RSI",
+                        "confiance": "100%",
+                    }
+    return None
 
-    if result == "TP":
-        message = (
-            f"✅ TRADE PARFAIT DÉTECTÉ\n\n📈 ACHAT\nPE : {entry}\nTP1 : {tp}\nTP2 : {entry + 1000}\nSL : {sl}\n\n"
-            f"📚 Stratégie utilisée : {', '.join(strat_detectee)}\n🔐 Taux de confiance : 100 %\n🕓 Heure : {df['time'].iloc[-1].strftime('%Y-%m-%d %H:%M:%S')} UTC"
-        )
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-
-# === TEST INITIAL ===
-def trade_test():
-    df = get_data()
-    if df.empty:
-        return
-    price = df['close'].iloc[-1]
-    test = (
-        f"🧠 Trade test simulé lancé.\nAnalyse en cours...\n\n✅ TRADE PARFAIT DÉTECTÉ\n\n📈 ACHAT\nPE : {price}\nTP1 : {price + 300}\nTP2 : {price + 1000}\nSL : {price - 150}"
-    )
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=test)
+def main():
+    sent = False
+    df = get_binance_m5_data()
+    if df is not None:
+        signal = detect_trade(df)
+        if signal and not sent:
+            msg = (
+                f"✅ {signal['type']}\n"
+                f"PE : {signal['entry']}\n"
+                f"TP1 : {signal['tp']}\n"
+                f"SL : {signal['sl']}\n"
+                f"Stratégie : {signal['strategie']}\n"
+                f"Confiance : {signal['confiance']}"
+            )
+            send_telegram_message(msg)
+            sent = True
 
 if __name__ == "__main__":
-    trade_test()
-    while True:
-        analyse()
-        time.sleep(300)
+    send_telegram_message("📊 Trade test")
+    main()
