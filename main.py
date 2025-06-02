@@ -1,3 +1,5 @@
+# moteur_trader_parfait.py
+
 import requests
 import pandas as pd
 import time
