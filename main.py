@@ -470,6 +470,14 @@ def run_once():
 
 def main_loop():
     send_telegram("🟡 Démarrage moteur live (Signal-only, proba réelle)…")
+   # Vérifie et envoie le dernier prix BTCUSD récupéré depuis TwelveData
+try:
+    df = get_btcusd_data()
+    last_price = float(df["close"].iloc[-1])
+    last_time = str(df["datetime"].iloc[-1])
+    bot.send_message(chat_id=CHAT_ID, text=f"💰 Prix BTCUSD actuel : {last_price} USD (données {last_time} UTC)")
+except Exception as e:
+    bot.send_message(chat_id=CHAT_ID, text=f"⚠️ Erreur lors de la récupération du prix BTCUSD : {e}")
     while True:
         try:
             run_once()
