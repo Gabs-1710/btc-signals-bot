@@ -1,21 +1,10 @@
 """
 AI Trader — Signal-only + Probabilité RÉELLE (backtest glissant + stats live)
++ Envoi du DERNIER PRIX au démarrage pour vérification.
 
-Ce bot:
-- Analyse BTCUSDT (M5) en continu (via API publique Binance ou autre source)
-- Génère des signaux uniquement si toutes les conditions sont validées
-- Calcule une PROBABILITÉ RÉELLE par stratégie:
-    * p_short = taux de réussite (TP1 avant SL) sur la fenêtre courte (ex: ~10h)
-    * p_med   = taux de réussite sur la fenêtre moyenne (ex: ~24h)
-    * p_live  = taux cumulé observé en live (persisté)
-  Probabilité finale = pondération: 40% p_short + 40% p_med + 20% p_live (si dispo)
-- Envoie le message Telegram prêt à copier dans MT5 (manuel)
-
-Aucun chiffre n’est inventé: tout provient de tests/simulations récents + historique live.
-
-Remarques:
-- 1 pip = 0.01 USD (BTCUSD); TP/SL fixés en pips (paramètres)
-- Le bot privilégie le SILENCE si doute (qualité < seuil, ATR trop élevé, etc.)
+- Analyse BTCUSDT M5 (TwelveData ou Binance)
+- Probabilité réelle: backtests glissants (court/moyen) + stats live persistées
+- Envoi Telegram uniquement si proba >= seuil + qualité/ATR/MTF OK
 """
 
 import os, time, json, math, requests
@@ -33,7 +22,7 @@ from dotenv import load_dotenv
 # ======================
 load_dotenv()
 
-# Telegram (défauts = tes valeurs ; ENV peut surcharger)
+# Telegram (défauts; ENV peut surcharger)
 DEFAULT_TELEGRAM_BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
 DEFAULT_TELEGRAM_CHAT_ID   = "2128959111"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", DEFAULT_TELEGRAM_BOT_TOKEN)
@@ -230,9 +219,9 @@ def strat_ema_rsi(df):
 def strat_sfp(df):
     if len(df)<12: return None
     last=df.iloc[-1]; hh=df.high.iloc[-11:-1].max(); ll=df.low.iloc[-11:-1].min(); price=float(last.close)
-    if last.high>hh and last.close<hh:  # fake breakout
+    if last.high>hh and last.close<hh:
         return Signal("SELL", price, float(last.high)+1.50/100, price-TAKE_PROFIT_PIPS/100, price-TAKE_PROFIT_PIPS/100*TP2_MULTIPLIER, "SFP bearish")
-    if last.low<ll and last.close>ll:   # fake breakdown
+    if last.low<ll and last.close>ll:
         return Signal("BUY", price, float(last.low)-1.50/100,  price+TAKE_PROFIT_PIPS/100, price+TAKE_PROFIT_PIPS/100*TP2_MULTIPLIER, "SFP bullish")
 
 def strat_fvg(df):
@@ -274,7 +263,6 @@ STRATEGIES = [
 # BACKTEST & PROBABILITÉ
 # ======================
 def simulate_forward(df: pd.DataFrame, start_idx: int, sig: Signal):
-    """Renvoie ('TP2'|'TP1'|'SL'|'NONE', bars) selon ce qui est touché en premier après start_idx."""
     for i in range(start_idx + 1, len(df)):
         h=float(df.iloc[i].high); l=float(df.iloc[i].low)
         if sig.side=="BUY":
@@ -290,7 +278,6 @@ def simulate_forward(df: pd.DataFrame, start_idx: int, sig: Signal):
     return "NONE", len(df) - 1 - start_idx
 
 def _bt_collect(df: pd.DataFrame, fn, window: int):
-    """Collecte des résultats 'TP1/TP2/SL/NONE' pour une fenêtre glissante."""
     if len(df) < window + 50:
         window = max(50, len(df) - 1)
     sub = df.iloc[-window:].reset_index(drop=True)
@@ -312,7 +299,6 @@ def window_success_rate(df: pd.DataFrame, name: str, fn):
     def rate(arr):
         if len(arr)==0: return None,0
         tp = arr.count("TP1")+arr.count("TP2")
-        sl = arr.count("SL")
         n  = len(arr)
         return (tp/max(1,n)), n
     p_s, n_s = rate(res_short)
@@ -326,33 +312,25 @@ def live_success_rate(name: str):
     return rec["live_tp"]/tot, tot
 
 def fused_probability(p_s, n_s, p_m, n_m, p_live, n_live):
-    """Combinaison pondérée (priorise les fenêtres récentes, puis le live)."""
-    weights = []
-    vals    = []
+    weights=[]; vals=[]
     if p_s is not None and n_s>=BT_MIN_SIGNALS: weights.append(0.4); vals.append(p_s)
     if p_m is not None and n_m>=BT_MIN_SIGNALS: weights.append(0.4); vals.append(p_m)
     if p_live is not None and n_live>0:         weights.append(0.2); vals.append(p_live)
-    if not weights:
-        return None
-    wsum = sum(weights)
-    prob = sum(w*v for w,v in zip(weights, vals)) / wsum
-    return prob
+    if not weights: return None
+    wsum=sum(weights)
+    return sum(w*v for w,v in zip(weights, vals))/wsum
 
 # ======================
 # QUALITÉ & FILTRES
 # ======================
 def evaluate_quality(df: pd.DataFrame, sig: Signal):
     last=df.iloc[-1]; reasons=[]; score=1.0
-    # ATR cap
     atrp=float(last.atr_pips)
     if atrp>MAX_ATR_PIPS: reasons.append(f"ATR high {atrp:.0f}"); score*=0.65
-    # Large candle
     if float(last.rng)*100.0 > MAX_ATR_PIPS*1.5: reasons.append("Large candle"); score*=0.80
-    # Distances plausibles
     price=float(last.close)
     if not (0.5 <= abs(price - sig.sl) <= 3.5): reasons.append("SL unusual"); score*=0.85
     if not (1.5 <= abs(sig.tp1 - price) <= 6.5): reasons.append("TP1 unusual"); score*=0.88
-    # MTF
     if not mtf_ok(last, sig.side): reasons.append("MTF misaligned"); score*=0.70
     return max(0.0,min(1.0,score)), reasons
 
@@ -391,7 +369,6 @@ def emit(df: pd.DataFrame, name: str, sig: Signal, prob_pct: float):
     if not duplicate_ok(fp): return False, "Duplicate/time-blocked"
     if HARD_NO_TRADE: return False, "HARD_NO_TRADE"
 
-    # Telegram message
     msg = (
         f"✅ Signal détecté ({name})\n"
         f"{'ACHAT' if sig.side=='BUY' else 'VENTE'}\n"
@@ -413,32 +390,29 @@ def emit(df: pd.DataFrame, name: str, sig: Signal, prob_pct: float):
     return True, "sent"
 
 # ======================
-# CYCLE & MISE À JOUR DES STATS LIVE
+# LIVE STATS
 # ======================
 def update_live_stats(name: str, outcome: str):
-    # outcome in {"TP1","TP2","SL"}
     rec = STATS.get(name, {"live_tp":0,"live_sl":0})
     if outcome in ("TP1","TP2"): rec["live_tp"] += 1
     elif outcome=="SL":           rec["live_sl"] += 1
     STATS[name] = rec
     save_stats(STATS)
 
+# ======================
+# CYCLE
+# ======================
 def run_once():
     df = load_data(PAIR, INTERVAL, SOURCE, LOOKBACK_LIMIT)
     df = add_indicators(df)
     last = df.iloc[-1]
 
     for name, fn in STRATEGIES:
-        # 1) Backtests glissants -> p_short, p_med
         (p_s, n_s), (p_m, n_m) = window_success_rate(df, name, fn)
-        # 2) Stats live -> p_live
         p_l, n_l = live_success_rate(name)
-
-        # 3) Si fenêtres non probantes -> on passe à la stratégie suivante
         if (p_s is None and p_m is None and p_l is None):
             continue
 
-        # 4) Générer un signal actuel et revalider MTF & ATR
         sig = fn(df)
         if sig is None: 
             continue
@@ -447,37 +421,35 @@ def run_once():
         if float(last["atr_pips"]) > MAX_ATR_PIPS:
             continue
 
-        # 5) Probabilité fusionnée
         prob = fused_probability(p_s, n_s, p_m, n_m, p_l, n_l)
         if prob is None:
             continue
         prob_pct = round(prob*100.0, 2)
 
-        # 6) (Option) seuil de proba minimale
-        if prob < 0.90:   # n’envoie que si >= 90% estimé
+        if prob < 0.90:   # seuil proba
             continue
 
-        # 7) Envoi si tout est OK
         ok_emit, why = emit(df, name, sig, prob_pct)
         logger.info(f"[{name}] emit={ok_emit} reason={why}")
 
-        # 8) Mise à jour ex-post (backtest “immédiat” pour simuler l’issue du setup actuel)
-        #    -> on simule avec 12 bougies à venir sur l’historique (limité), c’est un proxy.
-        #       En réel, tu mettrais cette mise à jour quand TP1/SL est réellement atteint (listener d’exécution).
-        outcome, _bars = simulate_forward(df, len(df)-2, sig)  # proxy limité
+        # Mise à jour live (proxy)
+        outcome, _bars = simulate_forward(df, len(df)-2, sig)
         if outcome in ("TP1","TP2","SL"):
             update_live_stats(name, outcome)
 
 def main_loop():
+    # Message de démarrage
     send_telegram("🟡 Démarrage moteur live (Signal-only, proba réelle)…")
-   # Vérifie et envoie le dernier prix BTCUSD récupéré depuis TwelveData
-try:
-    df = get_btcusd_data()
-    last_price = float(df["close"].iloc[-1])
-    last_time = str(df["datetime"].iloc[-1])
-    bot.send_message(chat_id=CHAT_ID, text=f"💰 Prix BTCUSD actuel : {last_price} USD (données {last_time} UTC)")
-except Exception as e:
-    bot.send_message(chat_id=CHAT_ID, text=f"⚠️ Erreur lors de la récupération du prix BTCUSD : {e}")
+    # ➕ ENVOI DU DERNIER PRIX AU DÉMARRAGE (vérification)
+    try:
+        df0 = load_data(PAIR, INTERVAL, SOURCE, max(50, LOOKBACK_LIMIT))
+        last_price = float(df0["close"].iloc[-1])
+        last_time  = str(df0["open_time"].iloc[-1])
+        send_telegram(f"💰 Prix BTCUSD actuel : {last_price:.2f} USD (données {last_time} UTC)")
+    except Exception as e:
+        send_telegram(f"⚠️ Erreur lors de la récupération du prix BTCUSD : {e}")
+
+    # Boucle
     while True:
         try:
             run_once()
