@@ -1,13 +1,15 @@
 """
-AI Trader — Signal-only + Probabilité RÉELLE (backtest glissant + stats live)
-+ Envoi du DERNIER PRIX au démarrage pour vérification.
+AI Trader — Signal-only (Telegram) + Probabilité RÉELLE
+- Source unique: TwelveData (fiable sur Render)
+- Envoie le PRIX BTCUSD au démarrage pour vérification
+- Backtests glissants (court/moyen) + stats live persistées -> probabilité fusionnée
+- Filtres stricts (MTF H1/D1, ATR, qualité, anti-duplication, anti-contradiction)
+- Envoi uniquement si probabilité >= seuil
 
-- Analyse BTCUSDT M5 (TwelveData ou Binance)
-- Probabilité réelle: backtests glissants (court/moyen) + stats live persistées
-- Envoi Telegram uniquement si proba >= seuil + qualité/ATR/MTF OK
+A utiliser tel quel sur Render (Background Worker).
 """
 
-import os, time, json, math, requests
+import os, time, json, requests, math
 import numpy as np
 import pandas as pd
 from datetime import datetime, timezone
@@ -18,39 +20,37 @@ from ta.volatility import AverageTrueRange
 from dotenv import load_dotenv
 
 # ======================
-# CONFIG & ENV
+# CONFIG (préremplies, surchargeables par ENV)
 # ======================
 load_dotenv()
 
-# Telegram (défauts; ENV peut surcharger)
-DEFAULT_TELEGRAM_BOT_TOKEN = "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU"
-DEFAULT_TELEGRAM_CHAT_ID   = "2128959111"
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", DEFAULT_TELEGRAM_BOT_TOKEN)
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   DEFAULT_TELEGRAM_CHAT_ID)
+# Telegram
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN",
+    "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "2128959111")
 
-# Données
-SOURCE             = os.getenv("SOURCE", "binance")   # binance | twelvedata | sample
-TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
-PAIR               = os.getenv("PAIR", "BTCUSDT")
-INTERVAL           = os.getenv("INTERVAL", "5m")
-LOOKBACK_LIMIT     = int(os.getenv("LOOKBACK_LIMIT", "1200"))
+# Données (TwelveData uniquement)
+TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "2055fb1ec82c4ff5b487ce449faf8370")
+PAIR               = os.getenv("PAIR", "BTC/USD")     # format TwelveData
+INTERVAL           = os.getenv("INTERVAL", "5min")
+LOOKBACK_LIMIT     = int(os.getenv("LOOKBACK_LIMIT", "600"))  # ~2 jours M5
 
-# Garde-fous
+# Garde-fous & seuils
 QUALITY_MIN_SCORE       = float(os.getenv("QUALITY_MIN_SCORE", "0.93"))
-MAX_ENTRY_SLIPPAGE_PIPS = float(os.getenv("MAX_ENTRY_SLIPPAGE_PIPS", "50"))
-TAKE_PROFIT_PIPS        = float(os.getenv("TAKE_PROFIT_PIPS", "300"))   # 3.00$
-STOP_LOSS_PIPS          = float(os.getenv("STOP_LOSS_PIPS", "150"))     # 1.50$
+MAX_ENTRY_SLIPPAGE_PIPS = float(os.getenv("MAX_ENTRY_SLIPPAGE_PIPS", "50"))   # 0.50$
+TAKE_PROFIT_PIPS        = float(os.getenv("TAKE_PROFIT_PIPS", "300"))         # +3.00$
+STOP_LOSS_PIPS          = float(os.getenv("STOP_LOSS_PIPS", "150"))           # -1.50$
 TP2_MULTIPLIER          = float(os.getenv("TP2_MULTIPLIER", "3.3333"))
 COOLDOWN_MINUTES        = int(os.getenv("COOLDOWN_MINUTES", "5"))
 HARD_NO_TRADE           = int(os.getenv("HARD_NO_TRADE", "0"))
 
-# Backtest glissant
-BT_SHORT_WINDOW      = int(os.getenv("BT_SHORT_WINDOW", "120"))  # ~10h sur M5
-BT_MED_WINDOW        = int(os.getenv("BT_MED_WINDOW", "288"))    # ~24h sur M5
+# Backtests glissants
+BT_SHORT_WINDOW      = int(os.getenv("BT_SHORT_WINDOW", "120"))  # ~10h
+BT_MED_WINDOW        = int(os.getenv("BT_MED_WINDOW", "288"))    # ~24h
 BT_MIN_SIGNALS       = int(os.getenv("BT_MIN_SIGNALS", "3"))
-REQUIRE_100P_SUCCESS = int(os.getenv("REQUIRE_100P_SUCCESS", "1"))
+SEUIL_PROBA          = float(os.getenv("SEUIL_PROBA", "0.90"))   # 90%
 
-# Anti-contradiction & duplication
+# Anti-contradiction / duplication
 ANTI_CONTRA_MINUTES  = int(os.getenv("ANTI_CONTRA_MINUTES", "30"))
 DUPLICATE_BLOCK_MIN  = int(os.getenv("DUPLICATE_BLOCK_MIN", "60"))
 
@@ -58,9 +58,9 @@ DUPLICATE_BLOCK_MIN  = int(os.getenv("DUPLICATE_BLOCK_MIN", "60"))
 ATR_PERIOD           = int(os.getenv("ATR_PERIOD", "14"))
 MAX_ATR_PIPS         = float(os.getenv("MAX_ATR_PIPS", "120"))
 
-# Persistance
+# Persistance (stats live)
 STATE_PATH = os.getenv("STATE_PATH", "./ai_trader_state.json")
-STATS_PATH = os.getenv("STATS_PATH", "./ai_trader_stats.json")  # stats live par stratégie
+STATS_PATH = os.getenv("STATS_PATH", "./ai_trader_stats.json")
 
 # Logs
 logger.remove()
@@ -69,36 +69,25 @@ logger.add(lambda m: print(m, end=""),
            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | {message}\n")
 
 # ======================
-# UTILS
+# Utils
 # ======================
 def now_utc(): return datetime.now(timezone.utc)
 def now_iso(): return now_utc().isoformat(timespec="seconds")
+def pips(a,b): return abs(a-b)*100.0  # 1 pip = 0.01 USD
 
-def to_float(x):
-    try: return float(x)
-    except: return np.nan
-
-def pips(a: float, b: float) -> float:
-    # 1 pip = 0.01 USD pour BTCUSD
-    return abs(a - b) * 100.0
-
-def send_telegram(text: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram non configuré.")
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+def send_tg(text: str):
     try:
-        r = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
-        if r.status_code != 200:
-            logger.error(f"Telegram error {r.status_code}: {r.text}")
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
     except Exception as e:
-        logger.error(f"Telegram exception: {e}")
+        logger.error(f"Telegram error: {e}")
 
 def load_state():
     try:
         with open(STATE_PATH, "r", encoding="utf-8") as f: return json.load(f)
-    except:
-        return {"last_signal_fp": None, "last_side_time": {"BUY": None, "SELL": None}, "last_send_time": None}
+    except: return {"last_signal_fp": None, "last_side_time":{"BUY":None,"SELL":None}, "last_send_time": None}
+
 def save_state(st):
     try:
         with open(STATE_PATH, "w", encoding="utf-8") as f: json.dump(st, f)
@@ -108,8 +97,8 @@ def save_state(st):
 def load_stats():
     try:
         with open(STATS_PATH, "r", encoding="utf-8") as f: return json.load(f)
-    except:
-        return {}  # {strategy_name: {"live_tp":0,"live_sl":0}}
+    except: return {}  # {strategy_name: {"live_tp":0, "live_sl":0}}
+
 def save_stats(stats):
     try:
         with open(STATS_PATH, "w", encoding="utf-8") as f: json.dump(stats, f)
@@ -120,63 +109,39 @@ STATE = load_state()
 STATS = load_stats()
 
 # ======================
-# DATA LOADING
+# Données (TwelveData)
 # ======================
-def load_binance_klines(symbol: str, interval: str, limit: int) -> pd.DataFrame:
-    base = "https://api.binance.com/api/v3/klines"
-    r = requests.get(base, params={"symbol": symbol, "interval": interval, "limit": limit}, timeout=20)
-    r.raise_for_status()
-    rows=[]
-    for k in r.json():
-        rows.append({
-            "open_time": pd.to_datetime(k[0], unit="ms", utc=True),
-            "open": to_float(k[1]), "high": to_float(k[2]), "low": to_float(k[3]),
-            "close": to_float(k[4]), "volume": to_float(k[5]),
-        })
-    return pd.DataFrame(rows).dropna().reset_index(drop=True)
-
-def load_twelvedata(symbol: str, interval_td: str, limit: int) -> pd.DataFrame:
-    if not TWELVEDATA_API_KEY:
-        raise RuntimeError("TWELVEDATA_API_KEY manquant.")
+def load_twelvedata(symbol: str, interval: str, limit: int) -> pd.DataFrame:
     r = requests.get("https://api.twelvedata.com/time_series", params={
-        "symbol": "BTC/USD" if symbol.upper().startswith("BTC") else symbol,
-        "interval": "5min" if interval_td == "5m" else interval_td,
-        "outputsize": limit, "apikey": TWELVEDATA_API_KEY, "format": "JSON",
+        "symbol": symbol,
+        "interval": interval,
+        "outputsize": limit,
+        "apikey": TWELVEDATA_API_KEY,
+        "format": "JSON",
     }, timeout=20)
     r.raise_for_status()
     vals = r.json().get("values", [])
+    if not vals: raise RuntimeError(f"TwelveData vide pour {symbol}")
     rows=[]
     for d in reversed(vals):
         rows.append({
             "open_time": pd.to_datetime(d["datetime"], utc=True),
-            "open": to_float(d["open"]), "high": to_float(d["high"]),
-            "low":  to_float(d["low"]),  "close":to_float(d["close"]),
-            "volume": to_float(d.get("volume", 0)),
+            "open": float(d["open"]),
+            "high": float(d["high"]),
+            "low":  float(d["low"]),
+            "close":float(d["close"]),
+            "volume": float(d.get("volume", 0.0))
         })
-    return pd.DataFrame(rows).dropna().reset_index(drop=True)
+    return pd.DataFrame(rows).reset_index(drop=True)
 
-def load_sample(limit: int) -> pd.DataFrame:
-    idx = pd.date_range("2025-04-01", periods=max(limit,1200), freq="5min", tz="UTC")
-    price = 60000 + np.cumsum(np.random.normal(0,30,len(idx)))
-    high  = price + np.random.uniform(5,25,len(idx))
-    low   = price - np.random.uniform(5,25,len(idx))
-    openp = price + np.random.uniform(-10,10,len(idx))
-    close = price + np.random.uniform(-10,10,len(idx))
-    vol   = np.random.uniform(10,100,len(idx))
-    df = pd.DataFrame({"open_time": idx, "open": openp, "high": high, "low": low, "close": close, "volume": vol})
-    return df.tail(limit).reset_index(drop=True)
-
-def load_data(symbol, interval, source, limit):
-    if source=="binance": return load_binance_klines(symbol, interval, limit)
-    if source=="twelvedata": return load_twelvedata(symbol, interval, limit)
-    if source=="sample": return load_sample(limit)
-    raise ValueError(f"Source inconnue: {source}")
+def load_data():
+    return load_twelvedata(PAIR, INTERVAL, LOOKBACK_LIMIT)
 
 # ======================
-# INDICATEURS & MTF
+# Indicateurs & MTF
 # ======================
-def ema(s, w): return EMAIndicator(close=s, window=w, fillna=False).ema_indicator()
-def rsi(s, w=14): return RSIIndicator(close=s, window=w, fillna=False).rsi()
+def ema(s,w): return EMAIndicator(close=s, window=w, fillna=False).ema_indicator()
+def rsi(s,w=14): return RSIIndicator(close=s, window=w, fillna=False).rsi()
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df=df.copy()
@@ -185,9 +150,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     atr=AverageTrueRange(df["high"], df["low"], df["close"], window=ATR_PERIOD, fillna=False)
     df["atr"]=atr.average_true_range(); df["atr_pips"]=df["atr"]*100.0
     m5=df.set_index("open_time")
-    h1=m5["close"].resample("1H").last().dropna(); d1=m5["close"].resample("1D").last().dropna()
-    h1e=EMAIndicator(close=h1, window=21).ema_indicator()
-    d1e=EMAIndicator(close=d1, window=21).ema_indicator()
+    h1=m5["close"].resample("1H").last().dropna()
+    d1=m5["close"].resample("1D").last().dropna()
+    h1e=EMAIndicator(h1,21).ema_indicator(); d1e=EMAIndicator(d1,21).ema_indicator()
     df["h1_close"]=h1.reindex(m5.index, method="ffill").values
     df["h1_ema21"]=h1e.reindex(m5.index, method="ffill").values
     df["d1_close"]=d1.reindex(m5.index, method="ffill").values
@@ -196,12 +161,12 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df.dropna().reset_index(drop=True)
 
 def mtf_ok(row, side):
-    h1 = (row["h1_close"]>=row["h1_ema21"]) if side=="BUY" else (row["h1_close"]<=row["h1_ema21"])
-    d1 = (row["d1_close"]>=row["d1_ema21"]) if side=="BUY" else (row["d1_close"]<=row["d1_ema21"])
-    return bool(h1 and d1)
+    h1_ok = (row["h1_close"]>=row["h1_ema21"]) if side=="BUY" else (row["h1_close"]<=row["h1_ema21"])
+    d1_ok = (row["d1_close"]>=row["d1_ema21"]) if side=="BUY" else (row["d1_close"]<=row["d1_ema21"])
+    return bool(h1_ok and d1_ok)
 
 # ======================
-# STRATÉGIES (5 robustes)
+# Stratégies (5 noyaux robustes)
 # ======================
 class Signal:
     def __init__(self, side, entry, sl, tp1, tp2, reason):
@@ -260,58 +225,53 @@ STRATEGIES = [
 ]
 
 # ======================
-# BACKTEST & PROBABILITÉ
+# Backtest & proba
 # ======================
 def simulate_forward(df: pd.DataFrame, start_idx: int, sig: Signal):
-    for i in range(start_idx + 1, len(df)):
+    for i in range(start_idx+1, len(df)):
         h=float(df.iloc[i].high); l=float(df.iloc[i].low)
         if sig.side=="BUY":
-            if l <= sig.sl: return "SL", i - start_idx
-            if h >= sig.tp1:
-                if h >= sig.tp2: return "TP2", i - start_idx
-                return "TP1", i - start_idx
+            if l<=sig.sl: return "SL", i-start_idx
+            if h>=sig.tp1:
+                if h>=sig.tp2: return "TP2", i-start_idx
+                return "TP1", i-start_idx
         else:
-            if h >= sig.sl: return "SL", i - start_idx
-            if l <= sig.tp1:
-                if l <= sig.tp2: return "TP2", i - start_idx
-                return "TP1", i - start_idx
-    return "NONE", len(df) - 1 - start_idx
+            if h>=sig.sl: return "SL", i-start_idx
+            if l<=sig.tp1:
+                if l<=sig.tp2: return "TP2", i-start_idx
+                return "TP1", i-start_idx
+    return "NONE", len(df)-1-start_idx
 
 def _bt_collect(df: pd.DataFrame, fn, window: int):
-    if len(df) < window + 50:
-        window = max(50, len(df) - 1)
-    sub = df.iloc[-window:].reset_index(drop=True)
+    if len(df)<window+50: window=max(50, len(df)-1)
+    sub=df.iloc[-window:].reset_index(drop=True)
     results=[]
     for i in range(50, len(sub)-1):
-        w = sub.iloc[:i+1].copy()
-        sig = fn(w)
-        if sig is None: 
-            continue
-        if not mtf_ok(w.iloc[-1], sig.side):
-            continue
-        out,_ = simulate_forward(sub, i, sig)
+        w=sub.iloc[:i+1].copy()
+        sig=fn(w)
+        if sig is None: continue
+        if not mtf_ok(w.iloc[-1], sig.side): continue
+        out,_=simulate_forward(sub, i, sig)
         results.append(out)
     return results
 
 def window_success_rate(df: pd.DataFrame, name: str, fn):
-    res_short = _bt_collect(df, fn, BT_SHORT_WINDOW)
-    res_med   = _bt_collect(df, fn, BT_MED_WINDOW)
+    res_s=_bt_collect(df, fn, BT_SHORT_WINDOW)
+    res_m=_bt_collect(df, fn, BT_MED_WINDOW)
     def rate(arr):
-        if len(arr)==0: return None,0
-        tp = arr.count("TP1")+arr.count("TP2")
-        n  = len(arr)
+        if not arr: return None,0
+        tp=arr.count("TP1")+arr.count("TP2"); n=len(arr)
         return (tp/max(1,n)), n
-    p_s, n_s = rate(res_short)
-    p_m, n_m = rate(res_med)
-    return (p_s, n_s), (p_m, n_m)
+    p_s,n_s=rate(res_s); p_m,n_m=rate(res_m)
+    return (p_s,n_s),(p_m,n_m)
 
 def live_success_rate(name: str):
-    rec = STATS.get(name, {"live_tp":0,"live_sl":0})
-    tot = rec["live_tp"] + rec["live_sl"]
-    if tot==0: return None, 0
+    rec=STATS.get(name, {"live_tp":0,"live_sl":0})
+    tot=rec["live_tp"]+rec["live_sl"]
+    if tot==0: return None,0
     return rec["live_tp"]/tot, tot
 
-def fused_probability(p_s, n_s, p_m, n_m, p_live, n_live):
+def fused_probability(p_s,n_s,p_m,n_m,p_live,n_live):
     weights=[]; vals=[]
     if p_s is not None and n_s>=BT_MIN_SIGNALS: weights.append(0.4); vals.append(p_s)
     if p_m is not None and n_m>=BT_MIN_SIGNALS: weights.append(0.4); vals.append(p_m)
@@ -321,145 +281,111 @@ def fused_probability(p_s, n_s, p_m, n_m, p_live, n_live):
     return sum(w*v for w,v in zip(weights, vals))/wsum
 
 # ======================
-# QUALITÉ & FILTRES
+# Qualité & émission
 # ======================
 def evaluate_quality(df: pd.DataFrame, sig: Signal):
     last=df.iloc[-1]; reasons=[]; score=1.0
     atrp=float(last.atr_pips)
     if atrp>MAX_ATR_PIPS: reasons.append(f"ATR high {atrp:.0f}"); score*=0.65
-    if float(last.rng)*100.0 > MAX_ATR_PIPS*1.5: reasons.append("Large candle"); score*=0.80
+    if float(last.rng)*100.0>MAX_ATR_PIPS*1.5: reasons.append("Large candle"); score*=0.80
     price=float(last.close)
-    if not (0.5 <= abs(price - sig.sl) <= 3.5): reasons.append("SL unusual"); score*=0.85
-    if not (1.5 <= abs(sig.tp1 - price) <= 6.5): reasons.append("TP1 unusual"); score*=0.88
+    if not (0.5<=abs(price-sig.sl)<=3.5): reasons.append("SL unusual"); score*=0.85
+    if not (1.5<=abs(sig.tp1-price)<=6.5): reasons.append("TP1 unusual"); score*=0.88
     if not mtf_ok(last, sig.side): reasons.append("MTF misaligned"); score*=0.70
     return max(0.0,min(1.0,score)), reasons
 
-def fingerprint(sig: Signal) -> str:
+def fingerprint(sig: Signal)->str:
     return f"{sig.side}:{round(sig.entry,2)}:{round(sig.sl,2)}:{round(sig.tp1,2)}"
 
-def anti_contra_ok(side: str) -> bool:
-    other = "SELL" if side=="BUY" else "BUY"
-    t_iso = STATE["last_side_time"].get(other)
-    if not t_iso: return True
-    mins = (now_utc() - datetime.fromisoformat(t_iso)).total_seconds()/60.0
-    return mins >= ANTI_CONTRA_MINUTES
+def anti_contra_ok(side: str)->bool:
+    other="SELL" if side=="BUY" else "BUY"
+    t=STATE["last_side_time"].get(other)
+    if not t: return True
+    mins=(now_utc()-datetime.fromisoformat(t)).total_seconds()/60.0
+    return mins>=ANTI_CONTRA_MINUTES
 
-def duplicate_ok(fp: str) -> bool:
-    last_fp = STATE.get("last_signal_fp")
-    if last_fp != fp: return True
-    t_iso = STATE.get("last_send_time")
-    if not t_iso: return True
-    mins = (now_utc() - datetime.fromisoformat(t_iso)).total_seconds()/60.0
-    return mins >= DUPLICATE_BLOCK_MIN
+def duplicate_ok(fp: str)->bool:
+    if STATE.get("last_signal_fp")!=fp: return True
+    t=STATE.get("last_send_time")
+    if not t: return True
+    mins=(now_utc()-datetime.fromisoformat(t)).total_seconds()/60.0
+    return mins>=DUPLICATE_BLOCK_MIN
 
-# ======================
-# EMISSION
-# ======================
 def emit(df: pd.DataFrame, name: str, sig: Signal, prob_pct: float):
-    price_now=float(df.iloc[-1]["close"])
-    if pips(price_now, sig.entry) > MAX_ENTRY_SLIPPAGE_PIPS:
-        return False, "Entry too far"
+    price_now=float(df.iloc[-1].close)
+    if pips(price_now, sig.entry)>MAX_ENTRY_SLIPPAGE_PIPS:
+        return False,"Entry too far"
 
-    qscore, reasons = evaluate_quality(df, sig)
-    if qscore < QUALITY_MIN_SCORE:
-        return False, f"Quality {qscore:.2f} < {QUALITY_MIN_SCORE} ({','.join(reasons)})"
+    qscore,_=evaluate_quality(df, sig)
+    if qscore<QUALITY_MIN_SCORE:
+        return False,f"Quality {qscore:.2f}<{QUALITY_MIN_SCORE}"
 
-    if not anti_contra_ok(sig.side): return False, "Anti-contradiction"
-    fp = fingerprint(sig)
-    if not duplicate_ok(fp): return False, "Duplicate/time-blocked"
-    if HARD_NO_TRADE: return False, "HARD_NO_TRADE"
+    if not anti_contra_ok(sig.side): return False,"Anti-contradiction"
+    fp=fingerprint(sig)
+    if not duplicate_ok(fp): return False,"Duplicate/time-blocked"
+    if HARD_NO_TRADE: return False,"HARD_NO_TRADE"
 
-    msg = (
-        f"✅ Signal détecté ({name})\n"
-        f"{'ACHAT' if sig.side=='BUY' else 'VENTE'}\n"
-        f"PE : {sig.entry:.2f}\n"
-        f"TP1 : {sig.tp1:.2f}\n"
-        f"TP2 : {sig.tp2:.2f}\n"
-        f"SL : {sig.sl:.2f}\n"
-        f"Stratégie : {sig.reason}\n"
-        f"Probabilité (réelle): {prob_pct:.1f} %\n"
-        f"Heure (UTC) : {now_iso()}\n"
-        f"Symbole : {PAIR}"
-    )
-    send_telegram(msg)
+    msg=(f"✅ Signal détecté ({name})\n"
+         f"{'ACHAT' if sig.side=='BUY' else 'VENTE'}\n"
+         f"PE : {sig.entry:.2f}\n"
+         f"TP1 : {sig.tp1:.2f}\n"
+         f"TP2 : {sig.tp2:.2f}\n"
+         f"SL : {sig.sl:.2f}\n"
+         f"Stratégie : {sig.reason}\n"
+         f"Probabilité (réelle): {prob_pct*100:.1f} %\n"
+         f"Heure (UTC) : {now_iso()}\n"
+         f"Symbole : BTCUSD")
+    send_tg(msg)
 
-    STATE["last_signal_fp"] = fp
-    STATE["last_side_time"][sig.side] = now_iso()
-    STATE["last_send_time"] = now_iso()
+    STATE["last_signal_fp"]=fp
+    STATE["last_side_time"][sig.side]=now_iso()
+    STATE["last_send_time"]=now_iso()
     save_state(STATE)
-    return True, "sent"
+    return True,"sent"
 
-# ======================
-# LIVE STATS
-# ======================
 def update_live_stats(name: str, outcome: str):
-    rec = STATS.get(name, {"live_tp":0,"live_sl":0})
-    if outcome in ("TP1","TP2"): rec["live_tp"] += 1
-    elif outcome=="SL":           rec["live_sl"] += 1
-    STATS[name] = rec
-    save_stats(STATS)
+    rec=STATS.get(name, {"live_tp":0,"live_sl":0})
+    if outcome in ("TP1","TP2"): rec["live_tp"]+=1
+    elif outcome=="SL":          rec["live_sl"]+=1
+    STATS[name]=rec; save_stats(STATS)
 
 # ======================
-# CYCLE
+# Cycle
 # ======================
 def run_once():
-    df = load_data(PAIR, INTERVAL, SOURCE, LOOKBACK_LIMIT)
-    df = add_indicators(df)
-    last = df.iloc[-1]
-
-    for name, fn in STRATEGIES:
-        (p_s, n_s), (p_m, n_m) = window_success_rate(df, name, fn)
-        p_l, n_l = live_success_rate(name)
-        if (p_s is None and p_m is None and p_l is None):
-            continue
-
-        sig = fn(df)
-        if sig is None: 
-            continue
-        if not mtf_ok(last, sig.side):
-            continue
-        if float(last["atr_pips"]) > MAX_ATR_PIPS:
-            continue
-
-        prob = fused_probability(p_s, n_s, p_m, n_m, p_l, n_l)
-        if prob is None:
-            continue
-        prob_pct = round(prob*100.0, 2)
-
-        if prob < 0.90:   # seuil proba
-            continue
-
-        ok_emit, why = emit(df, name, sig, prob_pct)
-        logger.info(f"[{name}] emit={ok_emit} reason={why}")
-
-        # Mise à jour live (proxy)
-        outcome, _bars = simulate_forward(df, len(df)-2, sig)
-        if outcome in ("TP1","TP2","SL"):
-            update_live_stats(name, outcome)
+    df=load_data()
+    df=add_indicators(df)
+    last=df.iloc[-1]
+    for name,fn in STRATEGIES:
+        (p_s,n_s),(p_m,n_m)=window_success_rate(df, name, fn)
+        p_l,n_l=live_success_rate(name)
+        if p_s is None and p_m is None and p_l is None: continue
+        sig=fn(df)
+        if sig is None: continue
+        if not mtf_ok(last, sig.side): continue
+        if float(last.atr_pips)>MAX_ATR_PIPS: continue
+        prob=fused_probability(p_s,n_s,p_m,n_m,p_l,n_l)
+        if prob is None or prob<SEUIL_PROBA: continue
+        ok,why=emit(df, name, sig, prob)
+        logger.info(f"[{name}] emit={ok} reason={why}")
+        # proxy outcome (sur historique immédiat)
+        outcome,_bars=simulate_forward(df, len(df)-2, sig)
+        if outcome in ("TP1","TP2","SL"): update_live_stats(name, outcome)
 
 def main_loop():
-    # Message de démarrage
-    send_telegram("🟡 Démarrage moteur live (Signal-only, proba réelle)…")
-    # ➕ ENVOI DU DERNIER PRIX AU DÉMARRAGE (vérification)
+    # Démarrage + PRIX en clair
+    send_tg("🟡 Démarrage moteur live (Signal-only, proba réelle)…")
     try:
-        df0 = load_data(PAIR, INTERVAL, SOURCE, max(50, LOOKBACK_LIMIT))
-        last_price = float(df0["close"].iloc[-1])
-        last_time  = str(df0["open_time"].iloc[-1])
-        send_telegram(f"💰 Prix BTCUSD actuel : {last_price:.2f} USD (données {last_time} UTC)")
+        df0=load_data()
+        last_price=float(df0["close"].iloc[-1]); last_time=str(df0["open_time"].iloc[-1])
+        send_tg(f"💰 Prix BTCUSD actuel : {last_price:.2f} USD (données {last_time} UTC)")
     except Exception as e:
-        send_telegram(f"⚠️ Erreur lors de la récupération du prix BTCUSD : {e}")
+        send_tg(f"⚠️ Erreur lors de la récupération du prix BTCUSD : {e}")
 
-    # Boucle
     while True:
-        try:
-            run_once()
-        except Exception as e:
-            logger.error(f"Loop error: {e}")
-        time.sleep(60 * COOLDOWN_MINUTES)
+        try: run_once()
+        except Exception as e: logger.error(f"Loop error: {e}")
+        time.sleep(60*COOLDOWN_MINUTES)
 
-if __name__ == "__main__":
-    run_once_only = int(os.getenv("RUN_ONCE", "0"))
-    if run_once_only == 1:
-        run_once()
-    else:
-        main_loop()
+if __name__=="__main__":
+    main_loop()
