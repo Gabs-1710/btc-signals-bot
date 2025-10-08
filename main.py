@@ -1,12 +1,13 @@
 """
-AI Trader — Signal-only (Telegram) ENSEMBLE
+AI Trader — Signal-only (Telegram) ENSEMBLE — mode Actif & Sûr (≥80%)
 - Source: TwelveData (fiable sur Render)
 - Envoie le prix BTCUSD au démarrage
-- Nombreux setups: EMA/RSI, FVG, SFP, BOS/CHoCH, Order Block (proxy), Pullback EMA200,
-  Breakout-Retest, RSI Divergence
+- Nombreux setups (EMA/RSI, FVG, SFP, BOS, OB proxy, Pullback EMA200, Breakout-Retest, RSI Divergence)
 - Backtests glissants par setup (court/moyen) + stats live => probabilité par setup
-- COMBINE les setups alignés (même sens) => proba confluente + bonus de confluence
-- Filtres: MTF H1/D1, ATR, qualité distances, anti-duplication, anti-contradiction
+- Confluence: combine les setups alignés -> proba finale + bonus de confluence
+- Single-Strong: un setup exceptionnel peut partir seul si proba >= seuil fort
+- Seuil adaptatif: s’abaisse progressivement en journée calme, plancher 0.80
+- Filtres: MTF H1/D1, ATR, distances plausibles, anti-duplication, anti-contradiction
 """
 
 import os, time, json, requests, math
@@ -24,12 +25,14 @@ from dotenv import load_dotenv
 # ======================
 load_dotenv()
 
+# Telegram (prérempli, tu peux surcharger via ENV sur Render)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN",
     "7539711435:AAHQqle6mRgMEokKJtUdkmIMzSgZvteFKsU")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "2128959111")
 
+# Données TwelveData
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "2055fb1ec82c4ff5b487ce449faf8370")
-PAIR               = os.getenv("PAIR", "BTC/USD")          # TwelveData symbol
+PAIR               = os.getenv("PAIR", "BTC/USD")          # Ex: "BTC/USD"
 INTERVAL           = os.getenv("INTERVAL", "5min")
 LOOKBACK_LIMIT     = int(os.getenv("LOOKBACK_LIMIT", "900"))  # ~3 jours M5
 
@@ -38,23 +41,25 @@ TAKE_PROFIT_PIPS   = float(os.getenv("TAKE_PROFIT_PIPS", "300"))    # +3.00$
 STOP_LOSS_PIPS     = float(os.getenv("STOP_LOSS_PIPS", "150"))      # -1.50$
 TP2_MULTIPLIER     = float(os.getenv("TP2_MULTIPLIER", "3.3333"))
 
-# Filters / thresholds
-SEUIL_PROBA_SETUP  = float(os.getenv("SEUIL_PROBA_SETUP", "0.70"))   # proba min d'un setup seul pour entrer en combinaison
-SEUIL_PROBA_FINAL  = float(os.getenv("SEUIL_PROBA_FINAL", "0.90"))   # proba finale requise
-QUALITY_MIN_SCORE  = float(os.getenv("QUALITY_MIN_SCORE", "0.93"))
-MAX_ENTRY_SLIPPAGE_PIPS = float(os.getenv("MAX_ENTRY_SLIPPAGE_PIPS", "60"))
-ATR_PERIOD         = int(os.getenv("ATR_PERIOD", "14"))
-MAX_ATR_PIPS       = float(os.getenv("MAX_ATR_PIPS", "140"))
-COOLDOWN_MINUTES   = int(os.getenv("COOLDOWN_MINUTES", "5"))
-ANTI_CONTRA_MIN    = int(os.getenv("ANTI_CONTRA_MINUTES", "30"))
-DUPLICATE_BLOCK_MIN= int(os.getenv("DUPLICATE_BLOCK_MIN", "60"))
-HARD_NO_TRADE      = int(os.getenv("HARD_NO_TRADE", "0"))
+# Seuils & filtres
+SEUIL_PROBA_SETUP        = float(os.getenv("SEUIL_PROBA_SETUP", "0.55"))  # proba min d'un setup pour être candidat
+SEUIL_PROBA_SETUP_STRONG = float(os.getenv("SEUIL_PROBA_SETUP_STRONG", "0.95"))  # single-strong
+SEUIL_PROBA_FINAL        = float(os.getenv("SEUIL_PROBA_FINAL", "0.80"))  # cible globale (jamais < 0.80)
+QUALITY_MIN_SCORE        = float(os.getenv("QUALITY_MIN_SCORE", "0.93"))
+MAX_ENTRY_SLIPPAGE_PIPS  = float(os.getenv("MAX_ENTRY_SLIPPAGE_PIPS", "100"))
+ATR_PERIOD               = int(os.getenv("ATR_PERIOD", "14"))
+MAX_ATR_PIPS             = float(os.getenv("MAX_ATR_PIPS", "200"))
+COOLDOWN_MINUTES         = int(os.getenv("COOLDOWN_MINUTES", "2"))
+ANTI_CONTRA_MIN          = int(os.getenv("ANTI_CONTRA_MINUTES", "30"))
+DUPLICATE_BLOCK_MIN      = int(os.getenv("DUPLICATE_BLOCK_MIN", "60"))
+HARD_NO_TRADE            = int(os.getenv("HARD_NO_TRADE", "0"))
 
 # Backtests glissants
-BT_SHORT_WINDOW    = int(os.getenv("BT_SHORT_WINDOW", "120"))
-BT_MED_WINDOW      = int(os.getenv("BT_MED_WINDOW", "288"))
-BT_MIN_SIGNALS     = int(os.getenv("BT_MIN_SIGNALS", "3"))
+BT_SHORT_WINDOW          = int(os.getenv("BT_SHORT_WINDOW", "120"))
+BT_MED_WINDOW            = int(os.getenv("BT_MED_WINDOW", "288"))
+BT_MIN_SIGNALS           = int(os.getenv("BT_MIN_SIGNALS", "2"))
 
+# Persistance
 STATE_PATH = os.getenv("STATE_PATH", "./ai_trader_state.json")
 STATS_PATH = os.getenv("STATS_PATH", "./ai_trader_stats.json")
 
@@ -111,7 +116,7 @@ def load_twelvedata(symbol: str, interval: str, limit: int) -> pd.DataFrame:
     }, timeout=20)
     r.raise_for_status()
     vals = r.json().get("values", [])
-    if not vals: raise RuntimeError("TwelveData empty")
+    if not vals: raise RuntimeError("TwelveData vide")
     rows=[]
     for d in reversed(vals):
         rows.append({
@@ -153,7 +158,7 @@ def mtf_ok(row, side):
     return bool(h1_ok and d1_ok)
 
 # ======================
-# Signals
+# Signals (setups)
 # ======================
 class Sig:
     def __init__(self, name, side, entry, sl, tp1, tp2, reason):
@@ -167,7 +172,6 @@ def make_sig(name, side, price, sl_off_pips=STOP_LOSS_PIPS, tp_off_pips=TAKE_PRO
         sl=price + sl_off_pips/100; tp1=price - tp_off_pips/100; tp2=price - (tp_off_pips/100)*TP2_MULTIPLIER
     return Sig(name, side, price, sl, tp1, tp2, name)
 
-# --- Setups (détections légères mais robustes) ---
 def setup_ema_rsi(df):
     last, prev=df.iloc[-1], df.iloc[-2]; price=float(last.close)
     if last.ema_8>last.ema_21 and prev.ema_8<=prev.ema_21 and last.rsi_14>=52:
@@ -215,7 +219,6 @@ def setup_pullback_ema200(df):
 def setup_breakout_retest(df):
     last=df.iloc[-1]; price=float(last.close)
     hh=df.high.iloc[-25:-1].max(); ll=df.low.iloc[-25:-1].min()
-    # faux-retour simple
     if price>hh and abs(price-hh)/(hh+1e-9) < 0.002 and last.ema_8>last.ema_21:
         return make_sig("BRK_RT","BUY",price)
     if price<ll and abs(price-ll)/(ll+1e-9) < 0.002 and last.ema_8<last.ema_21:
@@ -295,7 +298,7 @@ def fused_probability(p_s,n_s,p_m,n_m,p_live,n_live):
     return sum(a*b for a,b in zip(w,v))/sum(w)
 
 # ======================
-# Quality & emission
+# Quality & helpers
 # ======================
 def quality_ok(df, sig: Sig):
     last=df.iloc[-1]; score=1.0
@@ -322,6 +325,20 @@ def dedup_ok(fprint: str)->bool:
     mins=(now_utc()-datetime.fromisoformat(t)).total_seconds()/60.0
     return mins>=DUPLICATE_BLOCK_MIN
 
+def effective_final_threshold(base: float = SEUIL_PROBA_FINAL) -> float:
+    """Seuil adaptatif: baisse progressive en cas de longue période sans signal, plancher 0.80."""
+    t = STATE.get("last_send")
+    if not t:  # jamais émis
+        return max(0.80, base)
+    mins = (now_utc() - datetime.fromisoformat(t)).total_seconds() / 60.0
+    if mins >= 24*60:
+        return 0.80
+    if mins >= 12*60:
+        return max(0.84, base)
+    if mins >= 6*60:
+        return max(0.86, base)
+    return max(0.80, base)
+
 def emit(sig: Sig, prob_final: float, parts: list):
     if HARD_NO_TRADE: return False,"HARD_NO_TRADE"
     f=fp(sig); STATE["last_fp"]=f
@@ -344,13 +361,10 @@ def run_once():
 
     # 1) évaluer tous les setups
     candidates=[]
-    probs={}
     for name,fn in SETUPS:
-        # backtests
         (p_s,n_s),(p_m,n_m)=window_success_rate(df, name, fn)
         p_l,n_l=live_success_rate(name)
         prob=fused_probability(p_s,n_s,p_m,n_m,p_l,n_l)
-        probs[name]=prob
         if prob is None or prob < SEUIL_PROBA_SETUP:
             continue
         sig=fn(df)
@@ -361,6 +375,16 @@ def run_once():
         if not quality_ok(df, sig): continue
         candidates.append((name, sig, prob))
 
+    # 1bis) single-strong setup (autorise un seul setup exceptionnel)
+    strong = [(n, s, p) for (n, s, p) in candidates if p is not None and p >= SEUIL_PROBA_SETUP_STRONG]
+    if strong:
+        strong.sort(key=lambda x: x[2], reverse=True)
+        name, sig, prob = strong[0]
+        if anti_contra(sig.side) and dedup_ok(fp(sig)):
+            ok, why = emit(sig, prob, [name])
+            logger.info(f"EMIT strong {name} p={prob:.3f} -> {ok}/{why}")
+            return
+
     if not candidates:
         logger.info("No candidate setups.")
         return
@@ -369,33 +393,34 @@ def run_once():
     by_side={"BUY":[], "SELL":[]}
     for name,sig,prob in candidates:
         by_side[sig.side].append((name,sig,prob))
+
+    thr = effective_final_threshold()
+
     for side, group in by_side.items():
         if not group: continue
-        # pick base = plus haute proba setup
+        # base = plus forte proba
         group.sort(key=lambda x: x[2], reverse=True)
         base_name, base_sig, base_prob = group[0]
         parts=[base_name]; probs_used=[base_prob]
-        # ajouter confluences compatibles (même sens, entry proche)
+        # ajouter confluence compatibles (même sens, entry proche)
         for name,sig,prob in group[1:]:
             if pips(sig.entry, base_sig.entry)<=MAX_ENTRY_SLIPPAGE_PIPS*1.5:
                 parts.append(name); probs_used.append(prob)
-        # proba finale = moyenne pondérée + bonus de confluence
+
         if probs_used:
             prob_final = sum(probs_used)/len(probs_used)
-            bonus = min(0.05*(len(parts)-1), 0.10)  # +5% par setup additionnel, max +10%
+            bonus = min(0.05*(len(parts)-1), 0.10)  # +5%/setup sup., max +10%
             prob_final = min(0.999, prob_final + bonus)
-            # checks finaux
-            if not anti_contra(side): 
-                continue
-            if not dedup_ok(fp(base_sig)):
-                continue
-            if prob_final >= SEUIL_PROBA_FINAL:
-                ok,why=emit(base_sig, prob_final, parts)
-                logger.info(f"EMIT {side} {parts} prob={prob_final:.3f} -> {ok}/{why}")
-            else:
-                logger.info(f"Confluence {parts} prob={prob_final:.3f} < seuil {SEUIL_PROBA_FINAL:.2f}")
 
-# proxy live update (simplifié)
+            if not anti_contra(side) or not dedup_ok(fp(base_sig)):
+                continue
+            if prob_final >= thr:
+                ok,why=emit(base_sig, prob_final, parts)
+                logger.info(f"EMIT {side} {parts} prob={prob_final:.3f} thr={thr:.2f} -> {ok}/{why}")
+            else:
+                logger.info(f"Confluence {parts} prob={prob_final:.3f} < thr {thr:.2f}")
+
+# proxy live update (si tu veux lier aux résultats réels plus tard)
 def update_live_stats(name: str, outcome: str):
     rec=STATS.get(name, {"live_tp":0,"live_sl":0})
     if outcome in ("TP1","TP2"): rec["live_tp"]+=1
@@ -403,7 +428,7 @@ def update_live_stats(name: str, outcome: str):
     STATS[name]=rec; save_stats(STATS)
 
 def main_loop():
-    send_tg("🟡 Démarrage moteur live (Ensemble)…")
+    send_tg("🟡 Démarrage moteur live (Ensemble — Actif & Sûr ≥80%)…")
     # prix au démarrage
     try:
         df0=load_data(); last_price=float(df0["close"].iloc[-1]); t=str(df0["open_time"].iloc[-1])
