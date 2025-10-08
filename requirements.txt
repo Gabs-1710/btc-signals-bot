@@ -1,8 +1,7 @@
-pandas>=2.2.2
-numpy>=1.26.4
-python-telegram-bot==13.15
-requests>=2.32.3
-python-dotenv>=1.0.1
-pytz>=2024.1
-ta>=0.11.0
-loguru>=0.7.2
+SEUIL_PROBA_SETUP=0.55
+SEUIL_PROBA_SETUP_STRONG=0.95
+SEUIL_PROBA_FINAL=0.80
+MAX_ATR_PIPS=200
+MAX_ENTRY_SLIPPAGE_PIPS=100
+BT_MIN_SIGNALS=2
+COOLDOWN_MINUTES=2
